@@ -5,6 +5,11 @@ namespace App\Repositories;
 use App\Models\Sensor;
 use Google\Cloud\Firestore\FieldValue;
 
+/**
+ * @deprecated Jalur Firestore di bawah ini LEGACY (audit.md §11) — bukan runtime aktif.
+ * MySQL adalah satu-satunya source of truth; Firestore hanya dipakai bila file
+ * kredensial firebase tersedia (tidak ada di setup LAN ini).
+ */
 class SensorRepository
 {
     protected ?FirestoreRepository $firestoreRepo = null;

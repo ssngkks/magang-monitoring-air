@@ -119,7 +119,12 @@ void OtaUpdater::checkForUpdate() {
   #ifdef OTA_MANIFEST_URL
   String fbNodeUrl = String(OTA_MANIFEST_URL);
   #else
+  // Hormati skema https bila port 443 (mis. tunnel TLS) — fallback http + port.
+  #if defined(LOCAL_SERVER_PORT) && LOCAL_SERVER_PORT == 443
+  String fbNodeUrl = "https://" + String(LOCAL_SERVER_HOST) + "/api/firmware/ota/check?device=" + String(KODE_NODE);
+  #else
   String fbNodeUrl = "http://" + String(LOCAL_SERVER_HOST) + ":" + String(LOCAL_SERVER_PORT) + "/api/firmware/ota/check?device=" + String(KODE_NODE);
+  #endif
   #endif
   String fbGwUrl = fbNodeUrl;
 

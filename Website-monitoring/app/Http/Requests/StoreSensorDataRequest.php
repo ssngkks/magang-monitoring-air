@@ -13,9 +13,8 @@ class StoreSensorDataRequest extends FormRequest
 
     protected function prepareForValidation(): void
     {
+        // BUG-1 fix: TANPA default kode_node/api_token. Alias Indonesia tetap didukung.
         $this->merge([
-            'kode_node' => $this->input('kode_node') ?? 'ESP32-WATER-01',
-            'api_token' => $this->input('api_token') ?? $this->header('X-API-KEY') ?? 'default-token',
             'temp' => $this->input('temp') ?? $this->input('suhu'),
             'humidity' => $this->input('humidity') ?? $this->input('kelembapan'),
             'water_level' => $this->input('water_level') ?? $this->input('ketinggian_air'),
@@ -26,8 +25,7 @@ class StoreSensorDataRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'api_token' => ['nullable', 'string'],
-            'kode_node' => ['nullable', 'string'],
+            'kode_node' => ['required', 'string'],
             'gateway_id' => ['nullable', 'string'],
 
             'ph' => ['nullable', 'numeric', 'between:0,14'],
@@ -36,7 +34,8 @@ class StoreSensorDataRequest extends FormRequest
             'turbidity' => ['nullable', 'numeric'],
             'water_level' => ['nullable', 'numeric'],
             'vibration_rms' => ['nullable', 'numeric'],
-            'ai_status' => ['nullable', 'string'],
+            // Nilai sesuai WaterQualityAI firmware: Normal | Anomali | Bahaya.
+            'ai_status' => ['nullable', 'string', 'in:Normal,Anomali,Bahaya'],
             'ai_confidence' => ['nullable', 'numeric'],
             'ai_diagnosis' => ['nullable', 'string'],
             'rssi' => ['nullable', 'numeric'],

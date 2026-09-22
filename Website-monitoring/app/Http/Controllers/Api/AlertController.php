@@ -82,8 +82,8 @@ class AlertController extends Controller
             return response()->json(['message' => 'Alert tidak ditemukan.'], 404);
         }
 
-        // Verifikasi kepemilikan alert
-        abort_unless(($alert['user_id'] ?? '') === $userId, 403);
+        // §1.3: tanpa ownership — user login mana pun boleh menandai alert dibaca.
+        // (Sebelumnya abort_unless user_id selalu 403 karena tabel alerts tak punya user_id.)
 
         $this->alertRepo->markAsRead($alertId);
         $alert['is_read'] = true;

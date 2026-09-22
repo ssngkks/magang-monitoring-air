@@ -22,15 +22,14 @@ class NodeController extends Controller
 
     public function index(Request $request)
     {
-        $userId = (string) (Auth::id() ?? $request->attributes->get('firebase_uid'));
+        // §1.3: tanpa ownership — semua user melihat semua device.
+        $nodes = $this->nodeRepo->getAll();
 
-        $thresholdMinutes = (int) config('watermonitoring.online_threshold_minutes', 10);
-        $nodes = $this->nodeRepo->getByUserId($userId);
-
-        $data = array_map(function (array $node) use ($thresholdMinutes) {
+        $data = array_map(function (array $node) {
             $live = $this->nodeLiveRepo->find($node['id']);
             $liveReading = $live['last_reading'] ?? null;
-            $isOnline = $this->nodeRepo->isOnline($node, $thresholdMinutes);
+            $conn = $this->nodeRepo->connectionStatus($node);
+            $isOnline = $conn['state'] === 'ONLINE';
             if (! $isOnline && ! empty($live['is_online'])) {
                 $isOnline = (bool) $live['is_online'];
             }
@@ -45,7 +44,8 @@ class NodeController extends Controller
                 'device_name' => $node['device_name'] ?? 'ESP32 Air Monitoring',
                 'status' => $node['status'] ?? 'active',
                 'is_online' => $isOnline,
-                'connection_status' => $isOnline ? 'Terhubung' : 'Terputus',
+                'connection' => $conn['state'],
+                'connection_status' => $conn['state'] === 'ONLINE' ? 'Terhubung' : ($conn['state'] === 'STALE' ? 'Tidak Stabil' : 'Terputus'),
                 'last_seen_at' => $this->formatTimestamp($lastSeenRaw),
                 'last_reading' => $liveReading,
                 'rssi' => $liveReading['rssi'] ?? -43,
@@ -77,7 +77,8 @@ class NodeController extends Controller
             'kode_node' => $validated['kode_node'],
             'nama_lokasi' => $validated['nama_lokasi'],
             'api_token_hash' => hash('sha256', $tokenPlaintext),
-            'status' => 'active',
+            // §5.4: pra-registrasi via web = pending.
+            'status' => 'pending',
         ]);
 
         return response()->json([

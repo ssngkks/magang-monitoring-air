@@ -5,6 +5,10 @@ namespace App\Repositories;
 use App\Models\Location;
 use Google\Cloud\Firestore\FieldValue;
 
+/**
+ * @deprecated Jalur Firestore di bawah ini LEGACY (audit.md §11) — bukan runtime aktif.
+ * MySQL adalah satu-satunya source of truth.
+ */
 class LocationRepository
 {
     protected ?FirestoreRepository $firestoreRepo = null;

@@ -13,7 +13,12 @@ class SensorDataController extends Controller
         /** @var array $node */
         $node = $request->attributes->get('node');
 
-        [$sensorData] = $service->ingest($node, array_merge($request->all(), $request->validated()));
+        try {
+            [$sensorData] = $service->ingest($node, array_merge($request->all(), $request->validated()));
+        } catch (\InvalidArgumentException $e) {
+            // §9: kode_node tak dikenal / bukan active → tolak, jangan simpan ke node lain.
+            return response()->json(['message' => $e->getMessage()], 404);
+        }
 
         return response()->json([
             'message' => 'Data sensor berhasil disimpan.',

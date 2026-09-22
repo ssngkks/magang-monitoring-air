@@ -16,7 +16,16 @@ namespace LoraProtocol {
   // "GETARAN:x,AIR:x.x,TURBID:x,PH:x.xx,SUHU:x.x,HUM:x.x" (+ ACC/GYRO jika MPU online)
   // Catatan: AI tidak disertakan karena inferensi dilakukan di Gateway.
   String encode(const SensorManager &sensors);
+
+  // NODE -> GATEWAY: paket pengumuman kapabilitas (audit.md §5/§6), dikirim saat boot:
+  // "HELLO:1.0.0,NODE:ESP32-NODE-01,CAP:ph,turbidity,water_level,temperature,humidity,vibration,mpu6050"
+  // mpu6050 hanya dicantumkan bila probe I2C 0x68 menemukan MPU (§6.3). CAP selalu field TERAKHIR.
+  String encodeHello(const String &firmwareVersion, bool mpuPresent);
 #endif
+
+  // GATEWAY: ambil daftar capability (CSV) setelah "CAP:" hingga akhir paket.
+  // Kembalikan string kosong bila bukan paket HELLO.
+  String extractCapabilities(const String &data);
 
   // GATEWAY: ambil 1 field tertentu dari payload berdasarkan key,
   // contoh: extractField(data, "PH:") -> "7.10"

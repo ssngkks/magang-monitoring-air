@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AIDiagnosticController;
 use App\Http\Controllers\Api\AlertController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\DeviceLifecycleController;
 use App\Http\Controllers\Api\DeviceManagementController;
 use App\Http\Controllers\Api\FirmwareOtaController;
 use App\Http\Controllers\Api\NodeController;
@@ -17,6 +18,13 @@ Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:au
 // Ingest dari node/ESP32/gateway — middleware custom hash + throttle per kode_node
 Route::middleware(['verify.node.token', 'throttle:ingest'])
     ->post('/sensor/store', [SensorDataController::class, 'store']);
+
+// Lifecycle device §5 audit.md — auth via device_key di body (X-Device-Key setara),
+// BUKAN Sanctum. Hello = sekali saat boot, heartbeat = tiap ±15 detik.
+Route::middleware(['throttle:ingest'])->group(function () {
+    Route::post('/devices/hello', [DeviceLifecycleController::class, 'hello']);
+    Route::post('/devices/heartbeat', [DeviceLifecycleController::class, 'heartbeat']);
+});
 
 // Public OTA routes (Gateway ESP32 & Web Manifest check)
 Route::get('/firmware/ota/check', [FirmwareOtaController::class, 'checkOta']);
@@ -61,7 +69,10 @@ Route::group(['middleware' => $authMiddleware], function () {
     // Master Perangkat (ESP32)
     Route::get('/devices', [DeviceManagementController::class, 'indexDevices']);
     Route::get('/devices/discover', [DeviceManagementController::class, 'discoverDevice']);
+    Route::get('/devices/pending', [DeviceLifecycleController::class, 'pending']);
     Route::post('/devices', [DeviceManagementController::class, 'storeDevice']);
+    Route::post('/devices/{id}/register', [DeviceLifecycleController::class, 'register']);
+    Route::post('/devices/{id}/ignore', [DeviceLifecycleController::class, 'ignore']);
     Route::put('/devices/{id}', [DeviceManagementController::class, 'updateDevice']);
     Route::delete('/devices/{id}', [DeviceManagementController::class, 'deleteDevice']);
 

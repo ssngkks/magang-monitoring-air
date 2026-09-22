@@ -54,8 +54,9 @@ class SecurityHardeningTest extends TestCase
         $this->assertFalse($canAccess($other, $nodeOwner->id));
     }
 
-    public function test_sensor_history_ownership_enforced(): void
+    public function test_sensor_history_shared_all_users(): void
     {
+        // §1.3 audit.md: TANPA ownership — semua user melihat SEMUA device.
         $owner = $this->actingAsUser();
         $other = User::factory()->create();
         $nodeOwn = Node::factory()->for($owner)->create();
@@ -64,11 +65,12 @@ class SecurityHardeningTest extends TestCase
         SensorData::factory()->for($nodeOther)->create();
 
         $this->getJson("/api/nodes/{$nodeOwn->id}/sensor-data")->assertOk();
-        $this->getJson("/api/nodes/{$nodeOther->id}/sensor-data")->assertStatus(403);
+        $this->getJson("/api/nodes/{$nodeOther->id}/sensor-data")->assertOk();
     }
 
-    public function test_alert_ownership_enforced(): void
+    public function test_alert_shared_all_users(): void
     {
+        // §1.3 audit.md: TANPA ownership.
         $owner = $this->actingAsUser();
         $other = User::factory()->create();
         $nodeOwn = Node::factory()->for($owner)->create();
@@ -76,16 +78,16 @@ class SecurityHardeningTest extends TestCase
         $alertOwn = Alert::factory()->for($nodeOwn)->create();
         $alertOther = Alert::factory()->for($nodeOther)->create();
 
-        // GET /api/alerts only returns own
+        // GET /api/alerts returns all
         $res = $this->getJson('/api/alerts?per_page=100');
         $res->assertOk();
         $ids = collect($res->json('data'))->pluck('id');
         $this->assertTrue($ids->contains($alertOwn->id));
-        $this->assertFalse($ids->contains($alertOther->id));
+        $this->assertTrue($ids->contains($alertOther->id));
 
-        // PATCH own ok, other 403
+        // PATCH any ok
         $this->patchJson("/api/alerts/{$alertOwn->id}/read")->assertOk();
-        $this->patchJson("/api/alerts/{$alertOther->id}/read")->assertStatus(403);
+        $this->patchJson("/api/alerts/{$alertOther->id}/read")->assertOk();
     }
 
     public function test_node_token_not_exposed_and_hash_hidden(): void

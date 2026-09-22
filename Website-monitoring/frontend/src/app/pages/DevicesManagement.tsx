@@ -41,6 +41,7 @@ import {
   DeviceItem,
   DeviceTypeItem,
   LocationItem,
+  PendingDevice,
   SensorItem,
   SensorTypeItem,
   FirmwareItem,
@@ -120,6 +121,18 @@ export function DevicesManagement() {
   // Upload Firmware Multi-Device Selection
   const [uploadFirmwareTargetDevices, setUploadFirmwareTargetDevices] = useState<string[]>([]);
   const [uploadSearchQuery, setUploadSearchQuery] = useState<string>('');
+  const [isUploadingFirmware, setIsUploadingFirmware] = useState(false);
+
+  // Perangkat Baru Ditemukan — antrean pending dari hello (§5.5)
+  const [pendingDevices, setPendingDevices] = useState<PendingDevice[]>([]);
+  const [registerTarget, setRegisterTarget] = useState<PendingDevice | null>(null);
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [registerForm, setRegisterForm] = useState({
+    device_name: '',
+    device_type_id: '',
+    location_id: '',
+    sensor_mode: 'auto' as 'auto' | 'manual',
+  });
 
   // Auto-detect & device addition modes
   const [deviceAddMode, setDeviceAddMode] = useState<'auto' | 'manual'>('auto');
@@ -219,6 +232,8 @@ export function DevicesManagement() {
   };
 
   const handleCloseUploadFirmware = () => {
+    // §10: jangan tutup paksa saat upload berjalan (tombol juga ter-disable).
+    if (isUploadingFirmware) return;
     const isDirty = Boolean(firmwareForm.name.trim() || firmwareForm.version.trim() || firmwareForm.file);
     if (isDirty && !window.confirm('Ada data yang belum disimpan di form upload firmware. Yakin ingin menutup form?')) {
       return;
@@ -256,6 +271,8 @@ export function DevicesManagement() {
           handleCloseCalibrateSensor();
         } else if (isUploadFirmwareOpen) {
           handleCloseUploadFirmware();
+        } else if (registerTarget) {
+          handleCloseRegister();
         } else if (isEditFirmwareOpen) {
           handleCloseEditFirmware();
         } else if (isUpgradeModalOpen) {
@@ -276,6 +293,7 @@ export function DevicesManagement() {
     isAddSensorOpen,
     calibratingSensor,
     isUploadFirmwareOpen,
+    registerTarget,
     isEditFirmwareOpen,
     isUpgradeModalOpen,
     selectedDevice,
@@ -290,12 +308,13 @@ export function DevicesManagement() {
   const loadData = async (isSilent = false) => {
     try {
       if (!isSilent) setLoading(true);
-      const [devRes, locRes, typesRes, firmRes, devTypesRes] = await Promise.all([
+      const [devRes, locRes, typesRes, firmRes, devTypesRes, pendRes] = await Promise.all([
         api.devices().catch(() => ({ data: [] })),
         api.locations().catch(() => ({ data: [] })),
         api.sensorTypes().catch(() => ({ data: [] })),
         api.firmwares().catch(() => ({ data: [] })),
         api.deviceTypes().catch(() => ({ data: [] })),
+        api.pendingDevices().catch(() => ({ data: [] })),
       ]);
 
       setDevices(devRes.data || []);
@@ -303,6 +322,7 @@ export function DevicesManagement() {
       setSensorTypes(typesRes.data || []);
       setFirmwares(firmRes.data || []);
       setDeviceTypes(devTypesRes.data || []);
+      setPendingDevices(pendRes.data || []);
       setLastSyncTime(new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     } catch (e) {
       console.error('Gagal memuat data manajemen perangkat:', e);
@@ -540,6 +560,68 @@ export function DevicesManagement() {
     }
   };
 
+  // ==========================================
+  // HANDLERS: PERANGKAT BARU DITEMUKAN (§5.5)
+  // ==========================================
+
+  const handleOpenRegister = (dev: PendingDevice) => {
+    setRegisterTarget(dev);
+    setRegisterForm({
+      device_name: dev.device_name && !dev.device_name.startsWith('Perangkat Baru')
+        ? dev.device_name
+        : '',
+      device_type_id: dev.device_type_id ? String(dev.device_type_id) : '',
+      location_id: dev.location_id ? String(dev.location_id) : '',
+      sensor_mode: 'auto',
+    });
+  };
+
+  const handleCloseRegister = () => {
+    if (isRegistering) return;
+    setRegisterTarget(null);
+  };
+
+  const handleSubmitRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!registerTarget || isRegistering) return;
+
+    setIsRegistering(true);
+    showFeedback('loading', 'Mendaftarkan Perangkat...', `Mengaktifkan ${registerTarget.kode_node}...`);
+    try {
+      await api.registerDevice(registerTarget.id, {
+        device_name: registerForm.device_name.trim() || registerTarget.device_name,
+        device_type_id: registerForm.device_type_id ? Number(registerForm.device_type_id) : null,
+        location_id: registerForm.location_id ? Number(registerForm.location_id) : null,
+        sensor_mode: registerForm.sensor_mode,
+      });
+      showFeedback(
+        'success',
+        'Berhasil',
+        registerForm.sensor_mode === 'auto'
+          ? `Perangkat ${registerTarget.kode_node} aktif. Sensor otomatis direkonsiliasi dari capability device.`
+          : `Perangkat ${registerTarget.kode_node} aktif (mode sensor manual).`,
+      );
+      setRegisterTarget(null);
+      loadData();
+    } catch (err: any) {
+      showFeedback('error', 'Gagal Mendaftar', err.message || 'Gagal mendaftarkan perangkat.');
+    } finally {
+      setIsRegistering(false);
+    }
+  };
+
+  const handleIgnoreDevice = async (dev: PendingDevice) => {
+    if (!confirm(`Abaikan perangkat ${dev.kode_node}? Perangkat dinonaktifkan (bisa diaktifkan lagi), bukan dihapus.`)) return;
+    showFeedback('loading', 'Mengabaikan...', `Menonaktifkan ${dev.kode_node}...`);
+    try {
+      await api.ignoreDevice(dev.id);
+      showFeedback('success', 'Berhasil', `Perangkat ${dev.kode_node} diabaikan (nonaktif).`);
+      loadData();
+    } catch (err: any) {
+      showFeedback('error', 'Gagal Mengabaikan', err.message || 'Gagal mengabaikan perangkat.');
+    }
+  };
+
   const handleDeleteDevice = async (deviceId: string | number, deviceCode: string) => {
     if (!confirm(`Apakah Anda yakin ingin menghapus perangkat ${deviceCode}? Seluruh sensor dan data terkait akan ikut dihapus.`)) {
       return;
@@ -679,6 +761,8 @@ export function DevicesManagement() {
 
   const handleSubmitFirmware = async (e: React.FormEvent) => {
     e.preventDefault();
+    // BUG-8 fix: cegah double-submit — abaikan bila upload sedang berjalan.
+    if (isUploadingFirmware) return;
     if (!firmwareForm.file) {
       showFeedback('error', 'File Belum Dipilih', 'Pilih file biner firmware (.bin) terlebih dahulu.');
       return;
@@ -690,6 +774,7 @@ export function DevicesManagement() {
     }
 
     showFeedback('loading', 'Mengunggah Firmware...', 'Sedang mengunggah biner firmware dan mendaftarkan jadwal update...');
+    setIsUploadingFirmware(true);
     try {
       const formData = new FormData();
       formData.append('firmware_file', firmwareForm.file);
@@ -714,7 +799,10 @@ export function DevicesManagement() {
       setUploadFirmwareTargetDevices([]);
       loadData();
     } catch (err: any) {
+      // Modal tetap terbuka agar user bisa coba lagi (§10).
       showFeedback('error', 'Gagal Mengunggah', err.message || 'Gagal mengunggah firmware.');
+    } finally {
+      setIsUploadingFirmware(false);
     }
   };
 
@@ -953,6 +1041,65 @@ export function DevicesManagement() {
             </button>
           </div>
 
+          {/* Perangkat Baru Ditemukan — antrean pending dari hello (§5.5) */}
+          {pendingDevices.length > 0 && (
+            <div className="p-5 rounded-3xl border border-blue-200 bg-blue-50/60 dark:border-blue-900/50 dark:bg-blue-950/20 shadow-xs">
+              <div className="flex items-center gap-2 mb-1">
+                <Radio className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                <h3 className="text-base font-bold text-gray-900 dark:text-white">
+                  🔵 Perangkat Baru Ditemukan ({pendingDevices.length})
+                </h3>
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+                Perangkat ini mengumumkan diri via <span className="font-mono">hello</span> tapi belum diregistrasi. Klik <strong>Daftarkan</strong> untuk mengaktifkan, atau <strong>Abaikan</strong> untuk menonaktifkan.
+              </p>
+              <div className="space-y-2">
+                {pendingDevices.map((dev) => (
+                  <div
+                    key={dev.id}
+                    className="p-3 rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 flex flex-col sm:flex-row sm:items-center gap-3"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="font-bold text-sm text-gray-900 dark:text-white font-mono">
+                        {dev.kode_node}
+                        <span className="ml-2 text-[10px] font-sans font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900/50">
+                          {dev.device_role === 'gateway' ? 'Gateway' : 'Node Sensor'}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                        {dev.device_name} · Firmware {dev.firmware_version || '1.0.0'}
+                        {dev.ip_address ? ` · IP ${dev.ip_address}` : ''}
+                        {dev.connection === 'ONLINE' ? ' · ● Online' : dev.connection === 'STALE' ? ' · ◐ Stale' : ' · ○ Offline'}
+                        {typeof dev.seconds_ago === 'number' ? ` · terlihat ${dev.seconds_ago < 60 ? `${dev.seconds_ago} dtk` : `${Math.round(dev.seconds_ago / 60)} mnt`} lalu` : ''}
+                      </div>
+                      {Array.isArray(dev.capabilities) && dev.capabilities.length > 0 && (
+                        <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5 font-mono">
+                          capability: {dev.capabilities.join(', ')}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenRegister(dev)}
+                        className="px-4 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs cursor-pointer transition-all"
+                      >
+                        Daftarkan
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleIgnoreDevice(dev)}
+                        className="px-4 py-2 rounded-xl text-xs font-semibold bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 cursor-pointer transition-all"
+                      >
+                        Abaikan
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* List Table of Devices */}
             <div className={`${selectedDevice ? 'lg:col-span-1' : 'lg:col-span-3'} rounded-3xl border border-gray-200 bg-white shadow-xs dark:border-gray-800 dark:bg-gray-900 overflow-hidden`}>
@@ -1025,15 +1172,39 @@ export function DevicesManagement() {
                             )}
                           </td>
                           <td className="px-4 py-3">
-                            <span
-                              className={`text-[11px] font-bold ${
-                                dev.is_online
-                                  ? 'text-green-600 dark:text-green-400'
-                                  : 'text-gray-400 dark:text-gray-500'
-                              }`}
-                            >
-                              {dev.is_online ? '● Online' : '○ Offline'}
-                            </span>
+                            <div className="flex flex-col gap-1">
+                              <span
+                                className={`inline-flex w-fit items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                  dev.status === 'active'
+                                    ? 'bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-300 dark:border-green-900/50'
+                                    : dev.status === 'pending'
+                                      ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900/50'
+                                      : 'bg-gray-100 text-gray-500 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700'
+                                }`}
+                              >
+                                {dev.status === 'active' ? 'Aktif' : dev.status === 'pending' ? 'Menunggu' : 'Nonaktif'}
+                              </span>
+                              <span
+                                className={`text-[11px] font-bold ${
+                                  (dev.connection || (dev.is_online ? 'ONLINE' : 'OFFLINE')) === 'ONLINE'
+                                    ? 'text-green-600 dark:text-green-400'
+                                    : (dev.connection || '') === 'STALE'
+                                      ? 'text-amber-600 dark:text-amber-400'
+                                      : 'text-gray-400 dark:text-gray-500'
+                                }`}
+                              >
+                                {(dev.connection || (dev.is_online ? 'ONLINE' : 'OFFLINE')) === 'ONLINE'
+                                  ? '● Online'
+                                  : (dev.connection || '') === 'STALE'
+                                    ? '◐ Stale'
+                                    : '○ Offline'}
+                              </span>
+                              {typeof dev.seconds_ago === 'number' && (
+                                <span className="text-[10px] text-gray-400">
+                                  terlihat {dev.seconds_ago < 60 ? `${dev.seconds_ago} dtk` : `${Math.round(dev.seconds_ago / 60)} mnt`} lalu
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="px-4 py-3 font-mono text-[11px] text-gray-600 dark:text-gray-400">
                             {dev.firmware_version || 'v1.0.0'}
@@ -2424,6 +2595,133 @@ export function DevicesManagement() {
       )}
 
       {/* ======================================================== */}
+      {/* MODAL: DAFTARKAN PERANGKAT BARU (§5.5)                   */}
+      {/* ======================================================== */}
+      {registerTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200"
+          onClick={handleCloseRegister}
+        >
+          <div
+            className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-3xl shadow-2xl p-6 border border-gray-200 dark:border-gray-800 max-h-[90vh] overflow-y-auto relative"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={handleCloseRegister}
+              disabled={isRegistering}
+              className="absolute top-5 right-5 p-1.5 rounded-xl text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-gray-800 transition cursor-pointer disabled:opacity-40"
+              title="Tutup Modal"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="flex items-center gap-2 mb-2 text-blue-600 dark:text-blue-400 pr-8">
+              <Cpu className="w-5 h-5" />
+              <h3 className="text-base font-bold text-gray-900 dark:text-white">
+                Daftarkan {registerTarget.kode_node}
+              </h3>
+            </div>
+            <p className="text-xs text-gray-500 mb-4 leading-relaxed">
+              {registerTarget.device_role === 'gateway' ? 'Gateway' : 'Node Sensor'}
+              {' '}· Firmware {registerTarget.firmware_version || '1.0.0'}
+              {registerTarget.ip_address ? ` · IP ${registerTarget.ip_address}` : ''}
+              {Array.isArray(registerTarget.capabilities) && registerTarget.capabilities.length > 0
+                ? ` · capability: ${registerTarget.capabilities.join(', ')}`
+                : ''}
+            </p>
+
+            <form onSubmit={handleSubmitRegister} className="space-y-4 text-xs">
+              <div>
+                <label className="block text-gray-700 dark:text-gray-300 font-semibold mb-1">Nama Perangkat *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Contoh: Tandon Utara"
+                  value={registerForm.device_name}
+                  onChange={(e) => setRegisterForm({ ...registerForm, device_name: e.target.value })}
+                  disabled={isRegistering}
+                  className="w-full rounded-xl border border-gray-300 p-2.5 dark:border-gray-700 dark:bg-gray-800 dark:text-white disabled:opacity-50"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-gray-700 dark:text-gray-300 font-semibold mb-1">Jenis Perangkat</label>
+                  <select
+                    value={registerForm.device_type_id}
+                    onChange={(e) => setRegisterForm({ ...registerForm, device_type_id: e.target.value })}
+                    disabled={isRegistering}
+                    className="w-full rounded-xl border border-gray-300 p-2.5 dark:border-gray-700 dark:bg-gray-800 dark:text-white disabled:opacity-50"
+                  >
+                    <option value="">— Pilih dari katalog —</option>
+                    {deviceTypes.map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-gray-700 dark:text-gray-300 font-semibold mb-1">Lokasi</label>
+                  <select
+                    value={registerForm.location_id}
+                    onChange={(e) => setRegisterForm({ ...registerForm, location_id: e.target.value })}
+                    disabled={isRegistering}
+                    className="w-full rounded-xl border border-gray-300 p-2.5 dark:border-gray-700 dark:bg-gray-800 dark:text-white disabled:opacity-50"
+                  >
+                    <option value="">— Belum ditempatkan —</option>
+                    {locations.map((l) => (
+                      <option key={l.id} value={l.id}>{l.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-gray-700 dark:text-gray-300 font-semibold mb-1">Mode Sensor</label>
+                <div className="flex gap-2">
+                  {(['auto', 'manual'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setRegisterForm({ ...registerForm, sensor_mode: mode })}
+                      disabled={isRegistering}
+                      className={`flex-1 px-3 py-2 rounded-xl border text-xs font-bold transition-colors cursor-pointer disabled:opacity-50 ${
+                        registerForm.sensor_mode === mode
+                          ? 'border-blue-600 bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300'
+                          : 'border-gray-300 dark:border-gray-700 text-gray-500 dark:text-gray-400'
+                      }`}
+                    >
+                      {mode === 'auto' ? 'Otomatis (dari capability)' : 'Manual'}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Otomatis: sensor direkonsiliasi dari capability yang dilaporkan device. Manual: tambah sendiri nanti.
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={handleCloseRegister}
+                  disabled={isRegistering}
+                  className="px-4 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 cursor-pointer font-medium disabled:opacity-50"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isRegistering}
+                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold cursor-pointer shadow-md shadow-blue-600/20 disabled:opacity-50"
+                >
+                  {isRegistering ? 'Mendaftarkan...' : 'Daftarkan'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
       {/* MODAL: UNGGAH FIRMWARE (MULTI-DEVICE TARGET PER JENIS)   */}
       {/* ======================================================== */}
       {isUploadFirmwareOpen && (
@@ -2438,7 +2736,8 @@ export function DevicesManagement() {
             <button
               type="button"
               onClick={handleCloseUploadFirmware}
-              className="absolute top-5 right-5 p-1.5 rounded-xl text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-gray-800 transition cursor-pointer"
+              disabled={isUploadingFirmware}
+              className="absolute top-5 right-5 p-1.5 rounded-xl text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-gray-800 transition cursor-pointer disabled:opacity-40"
               title="Tutup Modal"
             >
               <X className="w-5 h-5" />
@@ -2563,8 +2862,9 @@ export function DevicesManagement() {
                   type="file"
                   accept=".bin"
                   required
+                  disabled={isUploadingFirmware}
                   onChange={(e) => setFirmwareForm({ ...firmwareForm, file: e.target.files?.[0] || null })}
-                  className="w-full rounded-xl border border-gray-300 p-2 dark:border-gray-700 dark:bg-gray-800 dark:text-white file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 cursor-pointer"
+                  className="w-full rounded-xl border border-gray-300 p-2 dark:border-gray-700 dark:bg-gray-800 dark:text-white file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 cursor-pointer disabled:opacity-50"
                 />
               </div>
 
@@ -2583,16 +2883,17 @@ export function DevicesManagement() {
                 <button
                   type="button"
                   onClick={handleCloseUploadFirmware}
-                  className="px-4 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 cursor-pointer font-medium"
+                  disabled={isUploadingFirmware}
+                  className="px-4 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 cursor-pointer font-medium disabled:opacity-50"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  disabled={uploadFirmwareTargetDevices.length === 0}
+                  disabled={isUploadingFirmware || uploadFirmwareTargetDevices.length === 0}
                   className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold cursor-pointer shadow-md shadow-blue-600/20 disabled:opacity-50"
                 >
-                  Unggah & Tugaskan OTA
+                  {isUploadingFirmware ? 'Mengunggah...' : 'Unggah & Tugaskan OTA'}
                 </button>
               </div>
             </form>

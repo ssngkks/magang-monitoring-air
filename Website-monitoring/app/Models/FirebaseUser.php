@@ -4,6 +4,10 @@ namespace App\Models;
 
 use Illuminate\Contracts\Auth\Authenticatable;
 
+/**
+ * @deprecated LEGACY (audit.md §11) — referensi arsip era Firebase. Bukan runtime
+ * aktif (auth via Sanctum + tabel users MySQL). Jangan dipakai di kode baru.
+ */
 class FirebaseUser implements Authenticatable
 {
     public function __construct(

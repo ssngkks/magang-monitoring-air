@@ -93,6 +93,11 @@ void printSerialStatus() {
   Serial.println("========================================\n");
 }
 
+// Versi firmware node (dilaporkan saat hello agar dashboard tahu).
+#ifndef NODE_FW_VERSION
+#define NODE_FW_VERSION "1.0.0"
+#endif
+
 void sendLoraData() {
   if (!loraReady) {
     Serial.println("LORA TIDAK SIAP, DATA TIDAK DIKIRIM");
@@ -106,6 +111,25 @@ void sendLoraData() {
   bool sent = LoRa.endPacket();
 
   Serial.print("LORA DIKIRIM      : ");
+  Serial.println(sent ? "BERHASIL" : "GAGAL");
+  Serial.print("PAYLOAD           : ");
+  Serial.println(payload);
+  Serial.println();
+}
+
+// Paket pengumuman kapabilitas ke gateway (audit.md §5/§6).
+// MPU6050 hanya diumumkan bila probe I2C menemukannya (§6.3).
+void sendHelloPacket() {
+  if (!loraReady) return;
+
+  bool mpuPresent = sensors.isOnline("MPU");
+  String payload = LoraProtocol::encodeHello(NODE_FW_VERSION, mpuPresent);
+
+  LoRa.beginPacket();
+  LoRa.print(payload);
+  bool sent = LoRa.endPacket();
+
+  Serial.print("HELLO DIKIRIM     : ");
   Serial.println(sent ? "BERHASIL" : "GAGAL");
   Serial.print("PAYLOAD           : ");
   Serial.println(payload);
@@ -134,6 +158,12 @@ void setup() {
   fuotaNode.begin();
   Serial.println("STATUS FUOTA LORA : SIAP MENERIMA OTA TANPA KABEL");
   Serial.println("========================================\n");
+
+  // Umumkan identitas + kapabilitas ke gateway (diteruskan sebagai HTTP hello).
+  if (loraReady) {
+    delay(300); // beri waktu gateway siap menerima
+    sendHelloPacket();
+  }
 }
 
 void loop() {

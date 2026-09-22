@@ -553,26 +553,10 @@ bool LoraFuotaGateway::startFuota(const String &targetNode, const String &fwUrl,
     LittleFS.remove(FUOTA_TEMP_FILE);
   }
 
-  // Laporkan status langsung ke Laravel Web Server API (via HTTP lokal)
-  int slashSlash = fwUrl.indexOf("://");
-  if (slashSlash != -1) {
-    int slashApi = fwUrl.indexOf('/', slashSlash + 3);
-    String serverBase = (slashApi != -1) ? fwUrl.substring(0, slashApi) : fwUrl;
-    String laravelStatusUrl = serverBase + "/api/firmware/ota/status";
-    Serial.println("[FUOTA Gateway] Melaporkan status sukses ke Laravel Web: " + laravelStatusUrl);
-
-    HTTPClient httpLaravel;
-    httpLaravel.setTimeout(5000);
-    httpLaravel.begin(laravelStatusUrl);
-    httpLaravel.addHeader("Content-Type", "application/json");
-    String payload = "{\"device\":\"" + targetNode + "\",\"status\":\"success\",\"progress\":100,\"version\":\"" + version + "\"}";
-    int code = httpLaravel.POST(payload);
-    Serial.printf("[FUOTA Gateway] Respon status Laravel Web: %d\n", code);
-    httpLaravel.end();
-  }
-
-  // Laporkan ke Firebase RTDB
-  FirebaseClient::updateOtaStatus(targetNode, "success", 100);
+  // Satu pintu via FirebaseClient (TLS + X-Device-Key + skema server yang benar).
+  // Blok POST langsung yang lama dihapus: tanpa TLS, tanpa auth, skema salah (BUG-10).
+  // Versi ikut dilaporkan agar kolom nodes.firmware_version tersinkron di server.
+  FirebaseClient::updateOtaStatus(targetNode, "success", 100, "", currentVersion);
   state = FUOTA_GW_COMPLETED;
   return true;
 }

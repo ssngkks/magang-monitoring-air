@@ -2,7 +2,6 @@
 
 namespace App\Http\Middleware;
 
-use App\Models\Node;
 use App\Repositories\NodeRepository;
 use Closure;
 use Illuminate\Http\Request;
@@ -12,40 +11,55 @@ class VerifyNodeToken
 {
     public function __construct(protected NodeRepository $nodeRepo) {}
 
+    /**
+     * Auth device prototipe LAN (audit.md §7):
+     * - Header utama: X-Device-Key (shared DEVICE_KEY, §7).
+     *   X-API-KEY / body api_token / device_key diterima untuk kompatibilitas
+     *   token per-device lama & test suite.
+     * - TANPA default-token, TANPA auto-create (BUG-1 fix).
+     * - Key salah / hilang → 401. Device tak dikenal → 404 (lakukan hello dulu).
+     * - Status bukan active → 403 (pending = menunggu registrasi dashboard).
+     */
     public function handle(Request $request, Closure $next): Response
     {
-        $kodeNode = $request->input('kode_node') ?? 'ESP32-WATER-01';
-        $token = $request->input('api_token') ?? $request->header('X-API-KEY') ?? 'default-token';
+        $kodeNode = $request->input('kode_node') ?? $request->input('device_id');
+        $deviceKey = $request->header('X-Device-Key')
+            ?? $request->header('X-API-KEY')
+            ?? $request->input('device_key')
+            ?? $request->input('api_token');
+
+        if (empty($kodeNode) || ! is_string($kodeNode)) {
+            return response()->json(['message' => 'kode_node wajib diisi.'], 401);
+        }
+
+        if (empty($deviceKey) || ! is_string($deviceKey)) {
+            return response()->json(['message' => 'Device key wajib diisi (header X-Device-Key).'], 401);
+        }
 
         $node = $this->nodeRepo->findByKodeNode($kodeNode);
 
-        // Auto-register node jika belum ada di database lokal MySQL
         if (! $node) {
-            $createdId = $this->nodeRepo->createNode([
-                'kode_node' => $kodeNode,
-                'device_name' => 'ESP32 Water Monitoring',
-                'nama_lokasi' => 'Titik Pantau Sensor Utama',
-                'model_type' => 'ESP32',
-                'api_token_hash' => hash('sha256', $token),
-                'status' => 'active',
-            ]);
-            $node = $this->nodeRepo->find($createdId);
-        }
-
-        if (($node['status'] ?? '') !== 'active') {
             return response()->json([
-                'message' => 'Node tidak aktif.',
-            ], 401);
+                'message' => 'Device belum terdaftar. Lakukan POST /api/devices/hello terlebih dahulu.',
+            ], 404);
         }
 
-        // Cek hash token jika bukan default local token
-        if ($token !== 'default-token' && ! empty($node['api_token_hash'])) {
-            $incomingHash = hash('sha256', $token);
-            if (! hash_equals($node['api_token_hash'], $incomingHash) && ! hash_equals($node['api_token_hash'], hash('sha256', 'default-token'))) {
-                return response()->json([
-                    'message' => 'Token node tidak valid.',
-                ], 401);
-            }
+        // Hash diambil terpisah karena di-hidden dari toArray() (anti-bocor ke response).
+        $storedHash = $this->nodeRepo->getTokenHashByKodeNode($kodeNode);
+        if ($storedHash === null || ! hash_equals($storedHash, hash('sha256', $deviceKey))) {
+            return response()->json(['message' => 'Device key tidak valid.'], 401);
+        }
+
+        $status = $node['status'] ?? '';
+        if ($status === 'pending') {
+            return response()->json([
+                'message' => 'Device menunggu registrasi di dashboard.',
+                'status' => 'pending',
+            ], 403);
+        }
+
+        if ($status !== 'active') {
+            return response()->json(['message' => 'Device dinonaktifkan.'], 403);
         }
 
         $request->attributes->set('node', $node);

@@ -3,8 +3,8 @@
 namespace App\Repositories;
 
 use App\Models\Node;
-use App\Models\User;
 use DateTimeInterface;
+use Illuminate\Support\Str;
 
 /* =========================================================================
  * TEMPLATE KODE LAMA FIREBASE NODE REPOSITORY (JANGAN DIHAPUS - UNTUK TEMPLATE)
@@ -33,17 +33,26 @@ class NodeRepository
 {
     public function createNode(array $data): string
     {
+        // BUG-3 fix (audit.md §2/§7): TIDAK ADA fallback User::first() dan TIDAK ADA
+        // default-token. Prototipe ini tanpa ownership (§1.3) → user_id boleh null.
+        // Token/hash wajib dipasok caller; kalau kosong, dibuatkan acak (bukan default).
         $node = Node::create([
-            'user_id' => ! empty($data['user_id']) ? $data['user_id'] : (User::first()?->id ?? null),
+            'user_id' => $data['user_id'] ?? null,
             'location_id' => ! empty($data['location_id']) ? $data['location_id'] : null,
+            'device_type_id' => ! empty($data['device_type_id']) ? $data['device_type_id'] : null,
             'kode_node' => $data['kode_node'],
             'device_name' => $data['device_name'] ?? 'ESP32 Air Monitoring',
-            'nama_lokasi' => $data['nama_lokasi'] ?? 'Titik Pantau Sensor Utama',
+            'nama_lokasi' => $data['nama_lokasi'] ?? null,
             'model_type' => $data['model_type'] ?? 'ESP32',
-            'api_token_hash' => $data['api_token_hash'] ?? hash('sha256', 'default-token'),
-            'status' => $data['status'] ?? 'active',
+            'device_role' => $data['device_role'] ?? 'node',
+            'api_token_hash' => $data['api_token_hash'] ?? hash('sha256', Str::random(40)),
+            // Default "pending" (§5.3): device tak dikenal TIDAK PERNAH langsung active.
+            'status' => $data['status'] ?? 'pending',
             'firmware_version' => $data['firmware_version'] ?? '1.0.0',
-            'last_seen_at' => null,
+            'capabilities' => $data['capabilities'] ?? null,
+            'ip_address' => $data['ip_address'] ?? null,
+            'hardware_id' => $data['hardware_id'] ?? null,
+            'last_seen_at' => $data['last_seen_at'] ?? null,
         ]);
 
         return (string) $node->id;
@@ -51,7 +60,7 @@ class NodeRepository
 
     public function findByKodeNode(string $kodeNode): ?array
     {
-        $node = Node::with(['location', 'sensors'])->where('kode_node', $kodeNode)->first();
+        $node = Node::with(['location', 'deviceType', 'sensors'])->where('kode_node', $kodeNode)->first();
 
         return $node ? $node->toArray() : null;
     }
@@ -59,25 +68,45 @@ class NodeRepository
     public function find(string|int $id): ?array
     {
         $node = is_numeric($id)
-            ? Node::with(['location', 'sensors'])->find($id)
-            : Node::with(['location', 'sensors'])->where('kode_node', $id)->first();
+            ? Node::with(['location', 'deviceType', 'sensors'])->find($id)
+            : Node::with(['location', 'deviceType', 'sensors'])->where('kode_node', $id)->first();
 
         return $node ? $node->toArray() : null;
     }
 
+    /**
+     * Hash token untuk verifikasi auth. Dipisah dari find()/toArray() karena
+     * api_token_hash di-hidden dari output API (tidak boleh bocor ke response).
+     */
+    public function getTokenHashByKodeNode(string $kodeNode): ?string
+    {
+        $hash = Node::where('kode_node', $kodeNode)->value('api_token_hash');
+
+        return is_string($hash) && $hash !== '' ? $hash : null;
+    }
+
+    /**
+     * @deprecated Nama menyesatkan (tak pernah filter user). Prototipe tanpa
+     * ownership — audit.md §1.3/BUG-7: semua user melihat SEMUA device.
+     * Pakai getAll(). Dipertahankan sebagai wrapper agar caller lama tak pecah.
+     */
     public function getByUserId(?string $userId = null): array
     {
-        // Dalam sistem monitoring tandon air, seluruh perangkat tandon dapat diakses
-        // oleh semua operator/pengguna sistem yang terautentikasi.
-        return Node::with(['location', 'sensors'])
+        return $this->getAll();
+    }
+
+    public function getAll(): array
+    {
+        return Node::with(['location', 'deviceType', 'sensors'])
             ->orderBy('created_at', 'desc')
             ->get()
             ->toArray();
     }
 
-    public function getAll(): array
+    public function getPending(): array
     {
-        return Node::with(['location', 'sensors'])
+        return Node::with(['location', 'deviceType'])
+            ->where('status', 'pending')
             ->orderBy('created_at', 'desc')
             ->get()
             ->toArray();
@@ -146,10 +175,19 @@ class NodeRepository
         return $node;
     }
 
-    public function isOnline(array $node, int $thresholdMinutes = 5): bool
+    /**
+     * Status konektivitas 3-level dari last_seen_at (audit.md §5.6) — SATU implementasi
+     * untuk SEMUA controller. Threshold detik dari config/watermonitoring.php.
+     *
+     * @return array{state: string, seconds_ago: ?int} state = ONLINE|STALE|OFFLINE
+     */
+    public function connectionStatus(array $node): array
     {
+        $onlineSec = (int) config('watermonitoring.online_threshold_seconds', 45);
+        $staleSec = (int) config('watermonitoring.stale_threshold_seconds', 120);
+
         if (empty($node['last_seen_at'])) {
-            return false;
+            return ['state' => 'OFFLINE', 'seconds_ago' => null];
         }
 
         $lastSeen = $node['last_seen_at'];
@@ -157,18 +195,39 @@ class NodeRepository
             try {
                 $lastSeen = new \DateTime($lastSeen);
             } catch (\Throwable $e) {
-                return false;
+                return ['state' => 'OFFLINE', 'seconds_ago' => null];
             }
         }
 
         if (! $lastSeen instanceof DateTimeInterface) {
-            return false;
+            return ['state' => 'OFFLINE', 'seconds_ago' => null];
         }
 
-        $now = time();
-        $seen = $lastSeen->getTimestamp();
-        $diffSec = $now - $seen;
+        $diffSec = time() - $lastSeen->getTimestamp();
+        if ($diffSec < 0) {
+            $diffSec = 0; // toleransi skew jam
+        }
 
-        return $diffSec >= -30 && $diffSec <= ($thresholdMinutes * 60);
+        if ($diffSec <= $onlineSec) {
+            return ['state' => 'ONLINE', 'seconds_ago' => $diffSec];
+        }
+
+        if ($diffSec <= $staleSec) {
+            return ['state' => 'STALE', 'seconds_ago' => $diffSec];
+        }
+
+        return ['state' => 'OFFLINE', 'seconds_ago' => $diffSec];
+    }
+
+    /**
+     * Kompatibilitas: true hanya saat ONLINE. Parameter dalam DETIK
+     * (dulu menit — BUG-6 fix: semua caller kini detik via config).
+     */
+    public function isOnline(array $node, ?int $thresholdSeconds = null): bool
+    {
+        $thresholdSeconds ??= (int) config('watermonitoring.online_threshold_seconds', 45);
+        $ago = $this->connectionStatus($node)['seconds_ago'];
+
+        return $ago !== null && $ago <= $thresholdSeconds;
     }
 }

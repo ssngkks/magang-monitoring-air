@@ -79,7 +79,7 @@ class Phase4ApiTest extends TestCase
         $this->getJson('/api/user')->assertStatus(401);
     }
 
-    // 3. NODE CRUD & OWNERSHIP
+    // 3. NODE CRUD — §1.3 audit.md: TANPA ownership, semua user lihat SEMUA device.
     public function test_node_index_and_store_and_ownership(): void
     {
         $owner = $this->actingAsUser();
@@ -88,8 +88,10 @@ class Phase4ApiTest extends TestCase
         Node::factory()->for($other)->create(['kode_node' => 'OTHER-001']);
 
         $res = $this->getJson('/api/nodes');
-        $res->assertOk()->assertJsonCount(1, 'data');
-        $res->assertJsonPath('data.0.kode_node', 'OWN-001');
+        $res->assertOk()->assertJsonCount(2, 'data');
+        $codes = collect($res->json('data'))->pluck('kode_node');
+        $this->assertTrue($codes->contains('OWN-001'));
+        $this->assertTrue($codes->contains('OTHER-001'));
         // hidden
         $this->assertArrayNotHasKey('api_token_hash', $res->json('data.0'));
 
@@ -119,8 +121,8 @@ class Phase4ApiTest extends TestCase
 
         // owner ok 200
         $this->getJson("/api/nodes/{$node->id}/sensor-data")->assertOk()->assertJsonStructure(['data', 'meta']);
-        // other owner 403
-        $this->getJson("/api/nodes/{$otherNode->id}/sensor-data")->assertStatus(403);
+        // §1.3: tanpa ownership — node user lain tetap bisa dibaca (200)
+        $this->getJson("/api/nodes/{$otherNode->id}/sensor-data")->assertOk();
         // not found 404 -> laravel returns 404 for missing model, but forbidden for other? We'll test 404 for non-existent id triggers 404
         $this->getJson('/api/nodes/999999/sensor-data')->assertStatus(404);
 
@@ -151,8 +153,8 @@ class Phase4ApiTest extends TestCase
         $this->patchJson("/api/alerts/{$alertOwned->id}/read")->assertOk()->assertJsonPath('data.is_read', true);
         $this->assertDatabaseHas('alerts', ['id' => $alertOwned->id, 'is_read' => 1]);
 
-        // other cannot mark read -> 403
-        $this->patchJson("/api/alerts/{$alertOther->id}/read")->assertStatus(403);
+        // §1.3: tanpa ownership — alert node lain boleh ditandai dibaca (200)
+        $this->patchJson("/api/alerts/{$alertOther->id}/read")->assertOk();
         $this->patchJson('/api/alerts/999999/read')->assertStatus(404);
     }
 
@@ -214,9 +216,15 @@ class Phase4ApiTest extends TestCase
         // missing token 401
         $this->postJson('/api/sensor/store', ['kode_node' => 'LORA-NODE-01'])->assertStatus(401);
 
-        // inactive node 401
+        // inactive node 403 (§5.3 audit.md)
         $node->update(['status' => 'inactive']);
-        $this->postJson('/api/sensor/store', ['kode_node' => 'LORA-NODE-01', 'api_token' => $plain])->assertStatus(401);
+        $this->postJson('/api/sensor/store', ['kode_node' => 'LORA-NODE-01', 'api_token' => $plain])->assertStatus(403);
+        // pending node 403 (menunggu registrasi dashboard)
+        $node->update(['status' => 'pending']);
+        $this->postJson('/api/sensor/store', ['kode_node' => 'LORA-NODE-01', 'api_token' => $plain])->assertStatus(403);
+        // unknown kode_node 404 — tidak membuat node baru, tidak nyasar (§9)
+        $this->postJson('/api/sensor/store', ['kode_node' => 'RANDOM-XXX', 'api_token' => $plain])->assertStatus(404);
+        $this->assertDatabaseMissing('nodes', ['kode_node' => 'RANDOM-XXX']);
         $node->update(['status' => 'active']);
 
         // validation ph out of range 422

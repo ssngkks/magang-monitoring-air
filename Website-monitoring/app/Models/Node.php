@@ -12,13 +12,18 @@ class Node extends Model
     protected $fillable = [
         'user_id',
         'location_id',
+        'device_type_id',
         'kode_node',
         'device_name',
         'nama_lokasi',
         'model_type',
+        'device_role',
         'api_token_hash',
         'status',
         'firmware_version',
+        'capabilities',
+        'ip_address',
+        'hardware_id',
         'last_seen_at',
     ];
 
@@ -30,6 +35,7 @@ class Node extends Model
     {
         return [
             'last_seen_at' => 'datetime',
+            'capabilities' => 'array',
         ];
     }
 
@@ -41,6 +47,11 @@ class Node extends Model
     public function location()
     {
         return $this->belongsTo(Location::class);
+    }
+
+    public function deviceType()
+    {
+        return $this->belongsTo(DeviceType::class);
     }
 
     public function sensors()
@@ -68,9 +79,15 @@ class Node extends Model
         return $this->hasMany(SensorDataHourly::class);
     }
 
-    public function isOnline(int $withinMinutes = 10): bool
+    /**
+     * Konektivitas berbasis detik (audit.md §5.6). Satu-satunya sumber threshold
+     * adalah config/watermonitoring.php (online_threshold_seconds).
+     */
+    public function isOnline(?int $withinSeconds = null): bool
     {
+        $withinSeconds ??= (int) config('watermonitoring.online_threshold_seconds', 45);
+
         return $this->last_seen_at !== null
-            && $this->last_seen_at->gt(now()->subMinutes($withinMinutes));
+            && $this->last_seen_at->gt(now()->subSeconds($withinSeconds));
     }
 }

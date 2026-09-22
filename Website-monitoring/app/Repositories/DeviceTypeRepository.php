@@ -2,179 +2,66 @@
 
 namespace App\Repositories;
 
-use Google\Cloud\Firestore\FieldValue;
+use App\Models\DeviceType;
+use Illuminate\Support\Str;
+
+/* =========================================================================
+ * TEMPLATE KODE LAMA JENIS PERANGKAT JSON/FIRESTORE (JANGAN DIHAPUS - UNTUK TEMPLATE)
+ * =========================================================================
+ * class DeviceTypeRepositoryLegacy / JSON-file (storage/app/jenis_perangkat.json)
+ * + Firestore kondisional ('jenis_perangkat'):
+ *   getByUserId() → firestore where user_id / getLocalData()
+ *   create() → uniqid('devtype_') + saveLocalData()
+ *   ... (dipakai sebelum §8 audit.md — sekarang MySQL tabel device_types)
+ * ========================================================================= */
 
 class DeviceTypeRepository
 {
-    protected ?FirestoreRepository $firestoreRepo = null;
-
-    public function __construct()
-    {
-        try {
-            if (config('firebase.credentials') && file_exists(base_path(config('firebase.credentials')))) {
-                $this->firestoreRepo = new class extends FirestoreRepository
-                {
-                    public function __construct()
-                    {
-                        parent::__construct('jenis_perangkat');
-                    }
-                };
-            }
-        } catch (\Throwable $e) {
-            $this->firestoreRepo = null;
-        }
-    }
-
+    /**
+     * §1.3/§8: katalog global, tanpa ownership — userId diabaikan.
+     */
     public function getByUserId(string $userId): array
     {
-        if ($this->firestoreRepo) {
-            try {
-                $query = $this->firestoreRepo->where('user_id', '=', (string) $userId);
-                $list = $this->firestoreRepo->get($query);
-                if (! empty($list)) {
-                    return $list;
-                }
-            } catch (\Throwable $e) {
-            }
-        }
-
-        // Fallback file/sqlite storage if needed
-        return $this->getLocalData();
+        return $this->getAll();
     }
 
     public function getAll(): array
     {
-        if ($this->firestoreRepo) {
-            try {
-                $list = $this->firestoreRepo->get();
-                if (! empty($list)) {
-                    return $list;
-                }
-            } catch (\Throwable $e) {
-            }
-        }
-
-        return $this->getLocalData();
+        return DeviceType::withCount('nodes')->orderBy('name')->get()->toArray();
     }
 
-    public function find(string $id): ?array
+    public function find(string|int $id): ?array
     {
-        if ($this->firestoreRepo) {
-            try {
-                $doc = $this->firestoreRepo->find($id);
-                if ($doc) {
-                    return $doc;
-                }
-            } catch (\Throwable $e) {
-            }
-        }
+        $type = DeviceType::find($id);
 
-        foreach ($this->getLocalData() as $item) {
-            if ($item['id'] === $id) {
-                return $item;
-            }
-        }
-
-        return null;
+        return $type ? $type->toArray() : null;
     }
 
     public function create(array $data): array
     {
-        $id = uniqid('devtype_');
-        $data['id'] = $id;
-        $data['created_at'] = now()->toIso8601String();
+        $type = DeviceType::create([
+            'code' => $data['code'] ?? Str::slug($data['name'] ?? Str::random(6), '_'),
+            'name' => $data['name'],
+            'category' => $data['category'] ?? null,
+            'description' => $data['description'] ?? null,
+            'default_role' => $data['default_role'] ?? 'node',
+        ]);
 
-        if ($this->firestoreRepo) {
-            try {
-                $fsData = $data;
-                $fsData['created_at'] = FieldValue::serverTimestamp();
-                $fsId = $this->firestoreRepo->create($fsData);
-                $data['id'] = $fsId;
-            } catch (\Throwable $e) {
-            }
-        }
-
-        $all = $this->getLocalData();
-        $all[] = $data;
-        $this->saveLocalData($all);
-
-        return $data;
+        return $type->toArray();
     }
 
-    public function update(string $id, array $data): bool
+    public function update(string|int $id, array $data): bool
     {
-        $updated = false;
-        if ($this->firestoreRepo) {
-            try {
-                $this->firestoreRepo->update($id, $data);
-                $updated = true;
-            } catch (\Throwable $e) {
-            }
+        $type = DeviceType::find($id);
+        if (! $type) {
+            return false;
         }
 
-        $all = $this->getLocalData();
-        foreach ($all as &$item) {
-            if ($item['id'] === $id) {
-                $item = array_merge($item, $data);
-                $updated = true;
-                break;
-            }
-        }
-        $this->saveLocalData($all);
-
-        return $updated;
+        return (bool) $type->update($data);
     }
 
-    public function delete(string $id): bool
+    public function delete(string|int $id): bool
     {
-        $deleted = false;
-        if ($this->firestoreRepo) {
-            try {
-                $this->firestoreRepo->delete($id);
-                $deleted = true;
-            } catch (\Throwable $e) {
-            }
-        }
-
-        $all = $this->getLocalData();
-        $filtered = array_values(array_filter($all, fn ($item) => $item['id'] !== $id));
-        if (count($filtered) !== count($all)) {
-            $this->saveLocalData($filtered);
-            $deleted = true;
-        }
-
-        return $deleted;
-    }
-
-    protected function getStoragePath(): string
-    {
-        return storage_path('app/jenis_perangkat.json');
-    }
-
-    protected function getLocalData(): array
-    {
-        $path = $this->getStoragePath();
-        if (file_exists($path)) {
-            $content = file_get_contents($path);
-
-            return json_decode($content, true) ?: [];
-        }
-
-        return [
-            ['id' => 'devtype_node', 'name' => 'Node Sensor', 'description' => 'ESP32 Node pembaca sensor air & lingkungan'],
-            ['id' => 'devtype_gateway', 'name' => 'Gateway LoRa', 'description' => 'ESP32 Gateway TinyML penerima LoRa & pengirim RTDB'],
-        ];
-    }
-
-    protected function saveLocalData(array $data): void
-    {
-        try {
-            $path = $this->getStoragePath();
-            if (! file_exists(dirname($path))) {
-                @mkdir(dirname($path), 0755, true);
-            }
-            file_put_contents($path, json_encode($data, JSON_PRETTY_PRINT));
-        } catch (\Throwable $e) {
-        }
+        return (bool) DeviceType::where('id', $id)->delete();
     }
 }

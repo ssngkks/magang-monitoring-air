@@ -23,25 +23,33 @@ use App\Models\Node;
 
 class AlertRepository
 {
+    /**
+     * BUG-2 fix (audit.md §9): tanpa fallback Node::first(). Tak dikenal → null.
+     */
     protected function resolveNodeId(string|int $nodeId): ?int
     {
         if (is_numeric($nodeId)) {
-            return (int) $nodeId;
+            return Node::where('id', (int) $nodeId)->exists() ? (int) $nodeId : null;
         }
 
         $node = Node::where('kode_node', $nodeId)->first();
-        if ($node) {
-            return $node->id;
-        }
 
-        $first = Node::first();
+        return $node ? $node->id : null;
+    }
 
-        return $first ? $first->id : null;
+    public function find(string|int $alertId): ?array
+    {
+        $alert = Alert::with('node')->find($alertId);
+
+        return $alert ? $alert->toArray() : null;
     }
 
     public function createAlert(array $data): string
     {
-        $nodeId = $this->resolveNodeId($data['node_id'] ?? 1) ?? 1;
+        $nodeId = isset($data['node_id']) ? $this->resolveNodeId($data['node_id']) : null;
+        if (! $nodeId) {
+            throw new \InvalidArgumentException('Node alert tidak dikenal.');
+        }
 
         $alert = Alert::create([
             'node_id' => $nodeId,
@@ -59,9 +67,10 @@ class AlertRepository
 
         if ((string) $nodeId !== 'all') {
             $numericId = $this->resolveNodeId($nodeId);
-            if ($numericId) {
-                $query->where('node_id', $numericId);
+            if (! $numericId) {
+                return [];
             }
+            $query->where('node_id', $numericId);
         }
 
         if ($isRead !== null) {

@@ -26,7 +26,24 @@ String LoraProtocol::encode(const SensorManager &sensors) {
 
   return payload;
 }
+
+String LoraProtocol::encodeHello(const String &firmwareVersion, bool mpuPresent) {
+  String payload = "HELLO:" + firmwareVersion + ",NODE:" + String(KODE_NODE) +
+                   ",CAP:ph,turbidity,water_level,temperature,humidity,vibration";
+  if (mpuPresent) {
+    payload += ",mpu6050";
+  }
+  return payload;
+}
 #endif
+
+String LoraProtocol::extractCapabilities(const String &data) {
+  int idx = data.indexOf("CAP:");
+  if (idx == -1) return "";
+  String caps = data.substring(idx + 4);
+  caps.trim();
+  return caps;
+}
 
 String LoraProtocol::extractField(const String &data, const String &key) {
   int startIndex = data.indexOf(key);
@@ -49,6 +66,13 @@ String LoraProtocol::extractFieldWithFallback(const String &data, const String &
 
 #ifdef DEVICE_ROLE_GATEWAY
 #include "secrets.h"
+// Shared device key (audit.md §7), kompatibel nama lama.
+#if !defined(DEVICE_KEY) && defined(LOCAL_API_TOKEN)
+#define DEVICE_KEY LOCAL_API_TOKEN
+#endif
+#ifndef DEVICE_KEY
+#define DEVICE_KEY "prototipe-shared-key-ganti-ini"
+#endif
 String LoraProtocol::buildFirebaseJson(float waterLevel, int turbidity, float ph,
                                        float temperature, float humidity, unsigned long vibration,
                                        int rssi, float snr, const AIResult &ai,
@@ -56,7 +80,8 @@ String LoraProtocol::buildFirebaseJson(float waterLevel, int turbidity, float ph
   String targetNode = (nodeId.length() > 0) ? nodeId : String(KODE_NODE);
   String json = "{";
   json += "\"kode_node\":\"" + targetNode + "\",";
-  json += "\"api_token\":\"" + String(LOCAL_API_TOKEN) + "\",";
+  json += "\"api_token\":\"" + String(DEVICE_KEY) + "\",";
+  json += "\"device_key\":\"" + String(DEVICE_KEY) + "\",";
   json += "\"getaran\":" + String(vibration) + ",";
   json += "\"ketinggian_air\":" + String(waterLevel, 1) + ",";
   json += "\"turbidity\":" + String(turbidity) + ",";

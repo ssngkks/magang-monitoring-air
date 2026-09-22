@@ -94,6 +94,37 @@ class SensorTypeSeeder extends Seeder
                     'stability_threshold' => 0.35,
                 ],
             ],
+            // Dipakai gateway (capabilities lora_rssi/lora_snr/ai_status, §5.2/§6.1).
+            [
+                'code' => 'lora_rssi',
+                'name' => 'Kekuatan Sinyal LoRa (RSSI)',
+                'unit' => 'dBm',
+                'default_min' => -130.0,
+                'default_max' => 0.0,
+                'icon' => 'Activity',
+                'chart_type' => 'line',
+                'config_schema' => ['warning_min' => -110.0, 'critical_min' => -120.0],
+            ],
+            [
+                'code' => 'lora_snr',
+                'name' => 'Kualitas Sinyal LoRa (SNR)',
+                'unit' => 'dB',
+                'default_min' => -20.0,
+                'default_max' => 15.0,
+                'icon' => 'Activity',
+                'chart_type' => 'line',
+                'config_schema' => ['warning_min' => -10.0, 'critical_min' => -15.0],
+            ],
+            [
+                'code' => 'ai_status',
+                'name' => 'Edge AI Diagnostic Monitor',
+                'unit' => '%',
+                'default_min' => 0.0,
+                'default_max' => 100.0,
+                'icon' => 'Activity',
+                'chart_type' => 'bar',
+                'config_schema' => ['values' => ['Normal', 'Anomali', 'Bahaya']],
+            ],
         ];
 
         foreach ($types as $item) {

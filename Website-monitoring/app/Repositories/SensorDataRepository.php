@@ -28,45 +28,36 @@ use App\Models\SensorData;
 class SensorDataRepository
 {
     /**
-     * Helper untuk menyelesaikan ID numeric node dari ID string / kode_node
+     * Helper untuk menyelesaikan ID numeric node dari ID string / kode_node.
+     *
+     * BUG-2 fix (audit.md §9): TIDAK ADA fallback ke Node::first(). Kode yang tidak
+     * dikenal mengembalikan null — caller WAJIB menolak (404/403), bukan menyimpan
+     * ke node lain. Device_id dipakai langsung sebagai kode_node (§4).
      */
     protected function resolveNodeId(string|int $nodeId): ?int
     {
         if (is_numeric($nodeId)) {
-            return (int) $nodeId;
+            return Node::where('id', (int) $nodeId)->exists() ? (int) $nodeId : null;
         }
 
         $node = Node::where('kode_node', $nodeId)->first();
-        if ($node) {
-            return $node->id;
-        }
 
-        // Fallback: ambil node pertama jika ada
-        $firstNode = Node::first();
-
-        return $firstNode ? $firstNode->id : null;
+        return $node ? $node->id : null;
     }
 
     public function createReading(array $data): string
     {
-        $rawNodeId = $data['node_id'] ?? 'ESP32-WATER-01';
-        $numericNodeId = $this->resolveNodeId($rawNodeId);
+        $rawNodeId = $data['node_id'] ?? null;
+        $numericNodeId = $rawNodeId !== null ? $this->resolveNodeId($rawNodeId) : null;
 
         if (! $numericNodeId) {
-            // Auto create node jika belum ada
-            $newNode = Node::create([
-                'kode_node' => is_string($rawNodeId) && ! is_numeric($rawNodeId) ? $rawNodeId : 'ESP32-WATER-01',
-                'nama_lokasi' => $data['nama_lokasi'] ?? 'Titik Pantau Sensor Utama',
-                'device_name' => $data['device_name'] ?? 'ESP32 Air Monitoring',
-                'model_type' => 'ESP32',
-                'api_token_hash' => hash('sha256', 'default-token'),
-                'status' => 'active',
-            ]);
-            $numericNodeId = $newNode->id;
+            // §9: tolak — JANGAN auto-create, JANGAN simpan ke node lain (BUG-1/BUG-2).
+            throw new \InvalidArgumentException('Node tidak dikenal atau belum terdaftar aktif.');
         }
 
+        $thresholdVib = (float) config('watermonitoring.vibration_rms_threshold', 0.30);
         $vibrationRms = (float) ($data['vibration_rms'] ?? ($data['getaran'] ?? 0));
-        $vibration = $vibrationRms >= 0.3 || (! empty($data['vibration']) && $data['vibration'] === true) || ((int) ($data['getaran'] ?? 0) > 0);
+        $vibration = $vibrationRms >= $thresholdVib || (! empty($data['vibration']) && $data['vibration'] === true) || ((int) ($data['getaran'] ?? 0) > 0);
 
         $reading = SensorData::create([
             'node_id' => $numericNodeId,
@@ -103,9 +94,10 @@ class SensorDataRepository
 
         if ((string) $nodeId !== 'all') {
             $numericId = $this->resolveNodeId($nodeId);
-            if ($numericId) {
-                $query->where('node_id', $numericId);
+            if (! $numericId) {
+                return []; // kode tak dikenal → kosong, bukan data node lain (BUG-2)
             }
+            $query->where('node_id', $numericId);
         }
 
         if ($from) {

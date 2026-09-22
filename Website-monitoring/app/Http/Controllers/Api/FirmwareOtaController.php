@@ -266,39 +266,38 @@ class FirmwareOtaController extends Controller
 
     public function reportOtaStatus(Request $request)
     {
+        // BUG-10 fix: firmware mengirim kode_node/progress_percent/error_message,
+        // web lama memakai device/progress/error — terima keduanya.
         $validated = $request->validate([
             'device' => ['nullable', 'string'],
+            'kode_node' => ['nullable', 'string'],
             'ota_id' => ['nullable'],
             'status' => ['required', 'in:pending,downloading,installing,success,failed'],
             'progress' => ['nullable', 'integer', 'min:0', 'max:100'],
+            'progress_percent' => ['nullable', 'integer', 'min:0', 'max:100'],
             'error' => ['nullable', 'string'],
+            'error_message' => ['nullable', 'string'],
             'version' => ['nullable', 'string'],
         ]);
 
+        $device = $validated['device'] ?? $validated['kode_node'] ?? null;
+        $progress = $validated['progress'] ?? $validated['progress_percent'] ?? 0;
+        $error = $validated['error'] ?? $validated['error_message'] ?? null;
+
         $otaId = $validated['ota_id'] ?? null;
         if ($otaId) {
-            $this->otaRepo->updateStatus(
-                $otaId,
-                $validated['status'],
-                $validated['progress'] ?? 0,
-                $validated['error'] ?? null
-            );
-        } elseif (! empty($validated['device'])) {
-            $latestOta = $this->otaRepo->getLatestForNode(null, $validated['device']);
+            $this->otaRepo->updateStatus($otaId, $validated['status'], $progress, $error);
+        } elseif (! empty($device)) {
+            $latestOta = $this->otaRepo->getLatestForNode(null, $device);
             if ($latestOta) {
-                $this->otaRepo->updateStatus(
-                    $latestOta['id'],
-                    $validated['status'],
-                    $validated['progress'] ?? 0,
-                    $validated['error'] ?? null
-                );
+                $this->otaRepo->updateStatus($latestOta['id'], $validated['status'], $progress, $error);
             }
         }
 
         if ($validated['status'] === 'success') {
             // Update versi perangkat di database MySQL
-            if (! empty($validated['device']) && ! empty($validated['version'])) {
-                $node = $this->nodeRepo->findByKodeNode($validated['device']);
+            if (! empty($device) && ! empty($validated['version'])) {
+                $node = $this->nodeRepo->findByKodeNode($device);
                 if ($node) {
                     $this->nodeRepo->update($node['id'], [
                         'firmware_version' => $validated['version'],

@@ -13,6 +13,7 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         $this->call(SensorTypeSeeder::class);
+        $this->call(DeviceTypeSeeder::class);
         $admin = User::factory()->admin()->create([
             'name' => 'Admin Water Monitoring',
             'email' => 'admin@watermonitoring.test',

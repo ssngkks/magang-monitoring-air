@@ -26,7 +26,8 @@ class AppServiceProvider extends ServiceProvider
         }
 
         RateLimiter::for('ingest', function (Request $request) {
-            $key = $request->input('kode_node', $request->ip());
+            // hello/heartbeat memakai device_id; telemetry memakai kode_node.
+            $key = $request->input('kode_node', $request->input('device_id', $request->ip()));
 
             return Limit::perMinute(60)->by($key);
         });

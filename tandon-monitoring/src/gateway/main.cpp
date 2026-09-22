@@ -1,7 +1,8 @@
 // ============================================================
 // GATEWAY (ESP32 #2)
 // Menerima paket LoRa dari Node Sensor -> Menjalankan Edge AI TinyML lokal
-// -> Mengirim data ke Firebase Realtime Database & Alert Telegram.
+// -> Mengirim data ke Laravel lokal (MySQL) & Alert Telegram.
+// Alur lifecycle: hello saat boot, heartbeat tiap 15 dtk (audit.md §5).
 // ============================================================
 #include <Arduino.h>
 #include <SPI.h>
@@ -35,7 +36,18 @@
 // ================== INTERVAL ==================
 #define TELEGRAM_INTERVAL          120000UL  // 2 menit cooldown spam Telegram
 #define FIREBASE_HISTORY_INTERVAL  30000UL   // 30 detik interval log history
-#define OTA_CHECK_INTERVAL         900000UL  // Cek update OTA otomatis tiap 15 menit (15 * 60 * 1000 ms)
+#define OTA_CHECK_INTERVAL         60000UL   // Cek manifest OTA tiap 60 detik (LAN; bikin "force check" nyaris instan)
+#define HEARTBEAT_INTERVAL         15000UL   // Heartbeat ke Laravel tiap ±15 detik (audit.md §5.6)
+#define HELLO_REFRESH_INTERVAL     1800000UL // Segarkan hello node tiap 30 menit (bila HELLO LoRa terlewat)
+
+#ifndef CURRENT_FW_VERSION
+#define CURRENT_FW_VERSION "v1.0.2"
+#endif
+
+// Kapabilitas gateway sesuai audit.md §5.2
+#define GATEWAY_CAPABILITIES "lora_rssi,lora_snr,ai_status"
+// Kapabilitas bawaan node bila paket HELLO LoRa tak pernah diterima
+#define NODE_DEFAULT_CAPABILITIES "ph,turbidity,water_level,temperature,humidity,vibration"
 
 WaterQualityAI waterAI;
 
@@ -47,8 +59,15 @@ String lastTelegramStatus = "Normal";
 unsigned long lastWiFiCheck = 0;
 unsigned long lastHistoryUpload = 0;
 unsigned long lastOtaCheck = 0;
-unsigned long lastCommandCheck = 0;  // Interval cek command (force OTA dll) dari Firebase
+unsigned long lastHeartbeat = 0;
 bool wifiConnected = false;
+bool gatewayHelloSent = false;
+
+// Cache hello node terakhir yang diteruskan ke Laravel (prototipe: 1 node aktif)
+String lastNodeHelloId = "";
+String lastNodeCaps = "";
+String lastNodeFw = "1.0.0";
+unsigned long lastNodeHelloTime = 0;
 
 // ============================================================
 // WIFI
@@ -220,6 +239,13 @@ void setup() {
   OtaUpdater::begin();
   Serial.println("MENUNGGU DATA DARI NODE SENSOR (ESP32 #1)...");
   Serial.println("========================================\n");
+
+  // Umumkan diri ke Laravel (audit.md §5.1): sekali saat boot & WiFi connect.
+  // Muncul sebagai "pending" di dashboard bila kode belum diregistrasi.
+  if (wifiConnected) {
+    gatewayHelloSent = FirebaseClient::sendHello(GATEWAY_ID, "gateway", CURRENT_FW_VERSION, GATEWAY_CAPABILITIES);
+    lastHeartbeat = millis();
+  }
 }
 
 
@@ -229,28 +255,20 @@ void setup() {
 void loop() {
   checkWiFi();
 
-  // Cek update OTA berkala di background (tiap 1 jam)
+  // Cek update OTA berkala di background (manifest Laravel, tiap 60 detik).
+  // Tombol "force check" di website dibaca lewat polling ini (tanpa Firebase).
   if (wifiConnected && millis() - lastOtaCheck >= OTA_CHECK_INTERVAL) {
     lastOtaCheck = millis();
     OtaUpdater::checkForUpdate();
   }
 
-  // Cek command "Force OTA Check Sekarang" dari Firebase RTDB (tiap 3 detik)
-  // Website menulis /commands/{kode}/ota_force_check = true
-  // untuk memicu cek OTA segera tanpa menunggu interval berkala
-  if (wifiConnected && millis() - lastCommandCheck >= 3000UL) {
-    lastCommandCheck = millis();
-    String forceFlagNode = FirebaseClient::readCommand(KODE_NODE, "ota_force_check");
-    String forceFlagGw   = (String(GATEWAY_ID) != String(KODE_NODE)) ? FirebaseClient::readCommand(GATEWAY_ID, "ota_force_check") : "";
-
-    if (forceFlagNode == "true" || forceFlagGw == "true" || forceFlagNode == "1" || forceFlagGw == "1") {
-      Serial.println("\n[COMMAND] Tombol Upgrade Instan diterima dari website! Memeriksa pembaruan sekarang...");
-      FirebaseClient::clearCommand(KODE_NODE, "ota_force_check");
-      if (String(GATEWAY_ID) != String(KODE_NODE)) {
-        FirebaseClient::clearCommand(GATEWAY_ID, "ota_force_check");
-      }
-      lastOtaCheck = millis(); // reset timer
-      OtaUpdater::checkForUpdate();
+  // Heartbeat gateway tiap ±15 detik (audit.md §5.6). Belum hello → coba hello dulu.
+  if (wifiConnected && millis() - lastHeartbeat >= HEARTBEAT_INTERVAL) {
+    lastHeartbeat = millis();
+    if (!gatewayHelloSent) {
+      gatewayHelloSent = FirebaseClient::sendHello(GATEWAY_ID, "gateway", CURRENT_FW_VERSION, GATEWAY_CAPABILITIES);
+    } else {
+      FirebaseClient::sendHeartbeat(GATEWAY_ID);
     }
   }
 
@@ -270,6 +288,25 @@ void loop() {
     receivedData += (char)LoRa.read();
   }
 
+  // Paket pengumuman kapabilitas dari node (audit.md §5): teruskan sebagai HTTP hello.
+  if (receivedData.startsWith("HELLO:")) {
+    String helloNode = LoraProtocol::extractFieldWithFallback(receivedData, "NODE:", "ID:");
+    String helloCaps = LoraProtocol::extractCapabilities(receivedData);
+    String helloFw = LoraProtocol::extractField(receivedData, "HELLO:");
+    if (helloFw.length() == 0) helloFw = "1.0.0";
+    if (helloCaps.length() == 0) helloCaps = NODE_DEFAULT_CAPABILITIES;
+    Serial.println("[HELLO] Paket pengumuman dari node: " + helloNode + " caps=" + helloCaps);
+    if (wifiConnected && helloNode.length() > 0) {
+      if (FirebaseClient::sendHello(helloNode, "node", helloFw, helloCaps)) {
+        lastNodeHelloId = helloNode;
+        lastNodeCaps = helloCaps;
+        lastNodeFw = helloFw;
+        lastNodeHelloTime = millis();
+      }
+    }
+    return;
+  }
+
   // Validasi integritas paket LoRa (harus memiliki parameter kunci)
   if ((receivedData.indexOf("AIR:") == -1 && receivedData.indexOf("WATER_LEVEL:") == -1) ||
       (receivedData.indexOf("TURBID:") == -1 && receivedData.indexOf("TURBIDITY:") == -1)) {
@@ -282,6 +319,20 @@ void loop() {
 
   // Ekstraksi ID node pengirim secara dinamis (plug and play)
   String packetNodeId = LoraProtocol::extractFieldWithFallback(receivedData, "NODE:", "ID:");
+
+  // Pastikan node pengirim sudah hello ke Laravel (§5.3): bila paket HELLO LoRa
+  // terlewat (mis. gateway reboot belakangan), teruskan hello dari paket sensor
+  // dengan kapabilitas default + mpu6050 bila payload memuat data MPU.
+  if (wifiConnected && packetNodeId.length() > 0 &&
+      (lastNodeHelloId != packetNodeId || millis() - lastNodeHelloTime >= HELLO_REFRESH_INTERVAL)) {
+    String inferredCaps = NODE_DEFAULT_CAPABILITIES;
+    if (receivedData.indexOf("ACC:") != -1) inferredCaps += ",mpu6050";
+    if (FirebaseClient::sendHello(packetNodeId, "node", lastNodeFw, inferredCaps)) {
+      lastNodeHelloId = packetNodeId;
+      lastNodeCaps = inferredCaps;
+      lastNodeHelloTime = millis();
+    }
+  }
 
   // Ekstraksi data sensor dengan dukungan alias fleksibel
   unsigned long vibration = (unsigned long)LoraProtocol::extractFieldWithFallback(receivedData, "GETARAN:", "VIBRATION:").toInt();

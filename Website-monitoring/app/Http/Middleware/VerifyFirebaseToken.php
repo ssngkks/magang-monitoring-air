@@ -9,6 +9,11 @@ use Illuminate\Support\Facades\Auth as AuthFacade;
 use Laravel\Sanctum\PersonalAccessToken;
 use Symfony\Component\HttpFoundation\Response;
 
+/**
+ * @deprecated LEGACY (audit.md §11) — bukan jalur runtime aktif. Auth dipakai via
+ * auth:sanctum. Alias middleware dipertahankan agar bootstrap tak pecah, tapi
+ * TIDAK ADA route yang boleh memakainya.
+ */
 class VerifyFirebaseToken
 {
     /* =========================================================================

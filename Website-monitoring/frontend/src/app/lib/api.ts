@@ -171,6 +171,22 @@ export const api = {
   deleteDevice: (id: string | number) =>
     apiFetch<{ message: string }>(`/devices/${id}`, { method: 'DELETE' }),
 
+  // Lifecycle device §5 audit.md — hello/heartbeat milik ESP32, tiga ini milik dashboard
+  pendingDevices: () => apiFetch<{ data: PendingDevice[] }>('/devices/pending'),
+  registerDevice: (id: string | number, data: {
+    device_name?: string;
+    device_type_id?: string | number | null;
+    location_id?: string | number | null;
+    model_type?: string | null;
+    sensor_mode?: 'auto' | 'manual';
+  }) =>
+    apiFetch<{ message: string; data: DeviceItem; sensors?: unknown }>(`/devices/${id}/register`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  ignoreDevice: (id: string | number) =>
+    apiFetch<{ message: string }>(`/devices/${id}/ignore`, { method: 'POST' }),
+
   deviceSensors: (nodeId: string | number) =>
     apiFetch<{ data: SensorItem[] }>(`/devices/${nodeId}/sensors`),
   autoDetectSensors: (nodeId: string | number) =>
@@ -360,13 +376,26 @@ export interface DeviceItem {
   device_name: string;
   nama_lokasi: string;
   location_id?: string | number | null;
+  device_type_id?: string | number | null;
+  device_role?: 'node' | 'gateway' | string;
   model_type?: string;
   firmware_version?: string;
+  capabilities?: string[] | null;
+  ip_address?: string | null;
+  hardware_id?: string | null;
   status: string;
   is_online: boolean;
+  connection?: 'ONLINE' | 'STALE' | 'OFFLINE' | string;
+  seconds_ago?: number | null;
   sensor_count: number;
   sensors?: SensorItem[];
   last_seen_at?: string | null;
+}
+
+// Perangkat menunggu registrasi — sumber section "Perangkat Baru Ditemukan" (§5.5)
+export interface PendingDevice extends DeviceItem {
+  connection: 'ONLINE' | 'STALE' | 'OFFLINE' | string;
+  seconds_ago: number | null;
 }
 
 export interface FirmwareItem {

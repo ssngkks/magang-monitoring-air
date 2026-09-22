@@ -2,9 +2,13 @@
 
 namespace App\Services;
 
+use App\Events\AlertCreated;
+use App\Events\SensorDataReceived;
 use App\Jobs\KirimNotifikasiAlert;
 use App\Jobs\KirimNotifikasiRecovery;
+use App\Models\Alert;
 use App\Models\Node;
+use App\Models\SensorData;
 use App\Repositories\AlertRepository;
 use App\Repositories\NodeAlertStateRepository;
 use App\Repositories\NodeLiveRepository;
@@ -12,6 +16,7 @@ use App\Repositories\NodeRepository;
 use App\Repositories\NodeThresholdRepository;
 use App\Repositories\SensorDataRepository;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class SensorIngestService
 {
@@ -77,23 +82,31 @@ class SensorIngestService
             'nama_lokasi' => $node['nama_lokasi'] ?? 'Titik Pantau Sensor Utama',
         ]), $userId);
 
-        // 2b. Auto-detect & perbarui status Gateway ESP32 jika gateway_id dikirimkan
+        try {
+            if ($reading = SensorData::find($readingId)) {
+                event(new SensorDataReceived($reading));
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Gagal dispatch SensorDataReceived', ['error' => $e->getMessage()]);
+        }
+
+        // 2b. Gateway yang menitipkan data (§5.3): dikenal → sentuh last_seen saja
+        // (JANGAN paksa active). Tak dikenal → pending, menunggu hello + registrasi.
         $gatewayId = $data['gateway_id'] ?? null;
         if ($gatewayId) {
             $gw = Node::where('kode_node', $gatewayId)->first();
             if ($gw) {
-                $gw->update([
-                    'last_seen_at' => now(),
-                    'status' => 'active',
-                    'model_type' => 'ESP32 Gateway (LoRa)',
-                ]);
+                $gw->update(['last_seen_at' => now()]);
             } else {
                 Node::create([
                     'kode_node' => $gatewayId,
-                    'device_name' => 'ESP32 LoRa Gateway',
-                    'nama_lokasi' => $node['nama_lokasi'] ?? 'Stasiun Gateway Utama',
+                    'device_name' => 'Perangkat Baru '.$gatewayId,
                     'model_type' => 'ESP32 Gateway (LoRa)',
-                    'status' => 'active',
+                    'device_role' => 'gateway',
+                    // Salin hash pengirim (sama-sama pakai shared DEVICE_KEY) agar
+                    // gateway bisa heartbeat; hash di-hidden dari toArray() → ambil via repo.
+                    'api_token_hash' => $this->nodeRepo->getTokenHashByKodeNode($node['kode_node'] ?? '') ?? hash('sha256', Str::random(40)),
+                    'status' => 'pending',
                     'firmware_version' => '1.0.2',
                     'last_seen_at' => now(),
                 ]);
@@ -219,6 +232,14 @@ class SensorIngestService
             $alertData['id'] = $alertId;
             $alertData['reading'] = $readingPayload;
             $alert = $alertData;
+
+            try {
+                if ($alertModel = Alert::find($alertId)) {
+                    event(new AlertCreated($alertModel));
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Gagal dispatch AlertCreated', ['error' => $e->getMessage()]);
+            }
 
             // Update State Machine
             $this->alertStateRepo->updateState($nodeId, $severity, $anomalies[0]['param']);

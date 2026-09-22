@@ -25,6 +25,7 @@ class Sensor extends Model
         'calibration_data',
         'config',
         'is_active',
+        'source',
     ];
 
     protected function casts(): array
