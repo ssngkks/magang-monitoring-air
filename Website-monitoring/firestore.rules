@@ -1,0 +1,46 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Fungsi pembantu
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    function ownsResource() {
+      return isAuthenticated() && resource.data.user_id == request.auth.uid;
+    }
+
+    // Koleksi Users: hanya user bersangkutan yang bisa baca profilnya
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if false; // Tulis hanya via Backend Admin SDK
+    }
+
+    // Koleksi Nodes: user hanya bisa membaca node miliknya
+    match /nodes/{nodeId} {
+      allow read: if ownsResource();
+      allow write: if false; // Kelola node via backend Laravel
+    }
+
+    // Koleksi Live Node: untuk listener realtime dashboard frontend
+    // WAJIB field user_id di setiap dokumen
+    match /nodes_live/{nodeId} {
+      allow read: if ownsResource();
+      allow write: if false; // Hanya diupdate oleh backend ingest (Admin SDK, bypass rules)
+    }
+
+    // Koleksi Sensor Readings: baca data historis milik sendiri saja
+    match /sensor_readings/{readingId} {
+      allow read: if ownsResource();
+      allow write: if false; // Ingest eksklusif via backend
+    }
+
+    // Koleksi Alerts: baca notifikasi alert milik sendiri saja
+    match /alerts/{alertId} {
+      allow read: if ownsResource();
+      allow write: if false; // Ditulis & di-update via backend
+    }
+  }
+}
