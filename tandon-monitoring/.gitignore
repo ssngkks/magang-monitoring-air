@@ -1,0 +1,6 @@
+# JANGAN commit kredensial asli
+include/secrets.h
+
+.pio/
+.vscode/
+*.bak
