@@ -172,9 +172,9 @@ void checkTelegramAlert(float ph, int turbidity, float temp, float waterLevel,
     rekomendasi = "Seluruh parameter beroperasi dalam batas aman. Sistem berjalan optimal.";
   }
 
-  String icon = (ai.classId == AI_BAHAYA) ? "🚨 *BAHAYAA, HIDUP JOKOWI!!!!!*\n\n"
-              : (ai.classId == AI_ANOMALI) ? "⚠️ *WARNING, IYHH AJH*\n\n"
-                                            : "✅ *NORMAL, YAUDAH SIH😂*\n\n";
+  String icon = (ai.classId == AI_BAHAYA) ? "🚨 *BAHAYAA, last11pmtest*\n\n"
+              : (ai.classId == AI_ANOMALI) ? "⚠️ *WARNING, 11:44pm*\n\n"
+                                            : "✅ *NORMAL, TERTAWA TAPI TERLUKA😂*\n\n";
 
   String message = icon;
   message += "*Lokasi:* Unit Sensor Tandon Utama\n";

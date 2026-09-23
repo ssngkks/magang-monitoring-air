@@ -204,7 +204,7 @@ bool FirebaseClient::sendHeartbeat(const String &deviceId) {
   return (httpCode == 200);
 }
 
-void FirebaseClient::updateOtaStatus(const String &kodeNode, const String &status, int progress, const String &error, const String &version) {
+void FirebaseClient::updateOtaStatus(const String &kodeNode, const String &status, int progress, const String &error, const String &version, long otaId) {
   if (WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
@@ -254,8 +254,22 @@ void FirebaseClient::updateOtaStatus(const String &kodeNode, const String &statu
   if (version.length() > 0) {
     payload += ",\"version\":\"" + version + "\"";
   }
+  if (otaId > 0) {
+    payload += ",\"ota_id\":" + String(otaId);
+  }
   payload += "}";
 
-  http.POST(payload);
+  // Retry: laporan status OTA tidak boleh hilang diam-diam (sekali gagal = job
+  // nyangkut di dashboard). Coba maks 3x selang 500 ms; berhenti saat terkirim.
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    int httpCode = http.POST(payload);
+    if (httpCode > 0) {
+      Serial.printf("[OTA STATUS] Terkirim ke server (HTTP %d, percobaan %d)\n", httpCode, attempt);
+      break;
+    }
+    Serial.printf("[OTA STATUS] Gagal terkirim (percobaan %d/3): %s\n",
+                  attempt, http.errorToString(httpCode).c_str());
+    if (attempt < 3) delay(500);
+  }
   http.end();
 }

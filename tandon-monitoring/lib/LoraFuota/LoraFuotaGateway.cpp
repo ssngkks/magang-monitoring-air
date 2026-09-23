@@ -18,7 +18,9 @@ LoraFuotaGateway::LoraFuotaGateway()
     currentVersion(""),
     totalFileSize(0),
     totalChunks(0),
-    currentChunk(0) {}
+    currentChunk(0),
+    lastNackStatus(0),
+    currentOtaId(0) {}
 
 void LoraFuotaGateway::begin() {
   if (!LittleFS.begin(true)) {
@@ -60,6 +62,7 @@ bool LoraFuotaGateway::waitForAck(uint8_t expectedCmd, uint16_t expectedSeq, uns
           if (ackedCmd == expectedCmd) {
             Serial.printf("[FUOTA Gateway] NACK dari Node (cmd: 0x%02X, seq: %u, status: %d)!\n",
                           ackedCmd, seq, (int)status);
+            lastNackStatus = status;
             return false; // Fast retry on explicit NACK
           }
         }
@@ -75,7 +78,7 @@ bool LoraFuotaGateway::waitForAck(uint8_t expectedCmd, uint16_t expectedSeq, uns
 
 bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetNode, const String &expectedChecksum) {
   Serial.println("[FUOTA Gateway] Mengunduh binary firmware dari server ke LittleFS: " + url);
-  FirebaseClient::updateOtaStatus(targetNode, "downloading", 10);
+  reportOta("downloading", 10);
 
   // Hapus file lama jika ada
   if (LittleFS.exists(FUOTA_TEMP_FILE)) {
@@ -87,7 +90,7 @@ bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetN
   File file = LittleFS.open(FUOTA_TEMP_FILE, FILE_WRITE, true);
   if (!file) {
     Serial.println("[FUOTA Gateway] GAGAL membuka file di LittleFS untuk penulisan!");
-    FirebaseClient::updateOtaStatus(targetNode, "failed", 0, "Gagal membuat file binary di LittleFS Gateway");
+    reportOta("failed", 0, "Gagal membuat file binary di LittleFS Gateway");
     return false;
   }
 
@@ -106,7 +109,7 @@ bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetN
   if (!beginOk) {
     file.close();
     Serial.println("[FUOTA Gateway] HTTP begin gagal!");
-    FirebaseClient::updateOtaStatus(targetNode, "failed", 0, "Gagal koneksi HTTP ke server");
+    reportOta("failed", 0, "Gagal koneksi HTTP ke server");
     return false;
   }
 
@@ -115,7 +118,7 @@ bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetN
     file.close();
     http.end();
     Serial.printf("[FUOTA Gateway] HTTP download gagal, kode: %d\n", httpCode);
-    FirebaseClient::updateOtaStatus(targetNode, "failed", 0, "Download firmware HTTP error: " + String(httpCode));
+    reportOta("failed", 0, "Download firmware HTTP error: " + String(httpCode));
     return false;
   }
 
@@ -127,7 +130,7 @@ bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetN
 
   if (downloaded <= 0) {
     Serial.printf("[FUOTA Gateway] GAGAL: Download firmware error (%d)\n", downloaded);
-    FirebaseClient::updateOtaStatus(targetNode, "failed", 0, "Gagal mengunduh file binary ke LittleFS");
+    reportOta("failed", 0, "Gagal mengunduh file binary ke LittleFS");
     return false;
   }
 
@@ -135,7 +138,7 @@ bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetN
   File verify = LittleFS.open(FUOTA_TEMP_FILE, FILE_READ);
   if (!verify) {
     Serial.println("[FUOTA Gateway] GAGAL: File firmware tidak dapat dibuka kembali dari LittleFS!");
-    FirebaseClient::updateOtaStatus(targetNode, "failed", 0, "File firmware tidak dapat dibuka dari LittleFS");
+    reportOta("failed", 0, "File firmware tidak dapat dibuka dari LittleFS");
     return false;
   }
 
@@ -145,7 +148,7 @@ bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetN
   if (actualSize < 10000) {
     verify.close();
     Serial.printf("[FUOTA Gateway] GAGAL: File di LittleFS terlalu kecil (%u bytes)! File tidak tersimpan dengan benar.\n", actualSize);
-    FirebaseClient::updateOtaStatus(targetNode, "failed", 0, "File firmware gagal tersimpan ke LittleFS");
+    reportOta("failed", 0, "File firmware gagal tersimpan ke LittleFS");
     return false;
   }
 
@@ -153,7 +156,7 @@ bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetN
     verify.close();
     Serial.printf("[FUOTA Gateway] GAGAL: Ukuran file tidak lengkap (%u dari target %d bytes)!\n",
                   actualSize, expectedSize);
-    FirebaseClient::updateOtaStatus(targetNode, "failed", 0, "File firmware tidak lengkap di LittleFS");
+    reportOta("failed", 0, "File firmware tidak lengkap di LittleFS");
     return false;
   }
 
@@ -194,23 +197,30 @@ bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetN
     cleanCalc.toLowerCase();
 
     if (cleanCalc != cleanExp) {
-      Serial.printf("[FUOTA Gateway] PERINGATAN: SHA256 berbeda! Server: %s, Aktual: %s\n",
+      // SAFETY: file corrupt dilarang lanjut — hapus & batalkan (bukan sekadar warning).
+      // Node tidak memverifikasi SHA manifest, jadi gerbang ini satu-satunya penjamin
+      // keaslian file sebelum di-FUOTA-kan via LoRa.
+      Serial.printf("[FUOTA Gateway] GAGAL: SHA256 tidak cocok! Server: %s, Aktual: %s\n",
                     cleanExp.c_str(), cleanCalc.c_str());
-    } else {
-      Serial.println("[FUOTA Gateway] SHA256 VALID dan cocok 100% dengan server!");
+      Serial.println("[FUOTA Gateway] File corrupt, update DIBATALKAN demi keamanan.");
+      LittleFS.remove(FUOTA_TEMP_FILE);
+      reportOta("failed", 0, "Checksum SHA256 firmware tidak cocok - update dibatalkan");
+      return false;
     }
+    Serial.println("[FUOTA Gateway] SHA256 VALID dan cocok 100% dengan server!");
   }
 
   totalFileSize = actualSize;
   totalChunks = (totalFileSize + FUOTA_CHUNK_SIZE - 1) / FUOTA_CHUNK_SIZE;
   Serial.printf("[FUOTA Gateway] Total chunk LoRa yang akan dikirim: %u chunk\n", totalChunks);
-  FirebaseClient::updateOtaStatus(targetNode, "downloading", 20);
+  reportOta("downloading", 20);
   return true;
 }
 
 
-bool LoraFuotaGateway::sendAnnounce(const String &targetNode, const String &version, uint32_t size, uint16_t chunks) {
+int LoraFuotaGateway::sendAnnounce(const String &targetNode, const String &version, uint32_t size, uint16_t chunks) {
   Serial.println("[FUOTA Gateway] Mengirim pengumuman pembaruan (ANNOUNCE) ke Node: " + targetNode);
+  lastNackStatus = 0;
 
   for (int attempt = 1; attempt <= FUOTA_MAX_RETRIES; attempt++) {
     LoRa.beginPacket();
@@ -252,13 +262,17 @@ bool LoraFuotaGateway::sendAnnounce(const String &targetNode, const String &vers
 
     if (waitForAck(FUOTA_CMD_ANNOUNCE, 0, 3000)) {
       Serial.println("[FUOTA Gateway] Node merespon ACK! Node siap menerima data firmware.");
-      return true;
+      return 1;
+    }
+    if (lastNackStatus == FUOTA_STATUS_ALREADY_LATEST) {
+      Serial.println("[FUOTA Gateway] Node sudah menjalankan versi ini. Lewati flash.");
+      return 2;
     }
     delay(500);
   }
 
   Serial.println("[FUOTA Gateway] GAGAL: Node tidak merespon ANNOUNCE.");
-  return false;
+  return 0;
 }
 
 bool LoraFuotaGateway::readChunk(File &file, uint16_t seq, uint8_t *payload, size_t &bytesRead) {
@@ -454,7 +468,7 @@ bool LoraFuotaGateway::sendChunks(const String &targetNode) {
       if (millis() - lastFbUpdate > 10000 || seq == totalChunks - 1) {
         lastFbUpdate = millis();
         int fbProgress = 20 + (int)(progressPercent * 0.75f);
-        FirebaseClient::updateOtaStatus(targetNode, "installing", fbProgress);
+        reportOta("installing", fbProgress);
       }
     }
   }
@@ -493,6 +507,10 @@ bool LoraFuotaGateway::sendComplete(const String &targetNode) {
   return false;
 }
 
+void LoraFuotaGateway::reportOta(const String &status, int progress, const String &error) {
+  FirebaseClient::updateOtaStatus(currentTargetNode, status, progress, error, currentVersion, currentOtaId);
+}
+
 void LoraFuotaGateway::sendAbort(const String &targetNode, const char *reason) {
   Serial.print("[FUOTA Gateway] Mengirim ABORT ke Node: ");
   Serial.println(reason);
@@ -503,13 +521,13 @@ void LoraFuotaGateway::sendAbort(const String &targetNode, const char *reason) {
   LoRa.write(FUOTA_CMD_ABORT);
   LoRa.endPacket();
 
-  FirebaseClient::updateOtaStatus(targetNode, "failed", 0, reason);
+  reportOta("failed", 0, String(reason));
   state = FUOTA_GW_ERROR;
 }
 
 bool LoraFuotaGateway::startFuota(const String &targetNode, const String &fwUrl,
                                  const String &version, uint32_t expectedSize,
-                                 const String &expectedChecksum) {
+                                 const String &expectedChecksum, uint32_t otaId) {
   if (isBusy()) {
     Serial.println("[FUOTA Gateway] Proses FUOTA lain sedang berjalan!");
     return false;
@@ -517,6 +535,7 @@ bool LoraFuotaGateway::startFuota(const String &targetNode, const String &fwUrl,
 
   currentTargetNode = targetNode;
   currentVersion = version;
+  currentOtaId = otaId;
 
   Serial.println("\n========================================");
   Serial.println("[FUOTA Gateway] MEMULAI LORA FUOTA UNTUK NODE: " + targetNode);
@@ -532,7 +551,15 @@ bool LoraFuotaGateway::startFuota(const String &targetNode, const String &fwUrl,
 
   // 2. Kirim pengumuman ANNOUNCE via LoRa
   state = FUOTA_GW_TRANSMITTING;
-  if (!sendAnnounce(targetNode, version, totalFileSize, totalChunks)) {
+  int annRes = sendAnnounce(targetNode, version, totalFileSize, totalChunks);
+  if (annRes == 2) {
+    // Node sudah versi terbaru: anggap sukses agar pending di server ikut bersih,
+    // tanpa menghapus file apapun dan tanpa flash ulang.
+    reportOta("success", 100);
+    state = FUOTA_GW_COMPLETED;
+    return true;
+  }
+  if (annRes == 0) {
     sendAbort(targetNode, "Node tidak merespon pengumuman FUOTA (offline atau di luar jangkauan LoRa)");
     return false;
   }
@@ -556,7 +583,7 @@ bool LoraFuotaGateway::startFuota(const String &targetNode, const String &fwUrl,
   // Satu pintu via FirebaseClient (TLS + X-Device-Key + skema server yang benar).
   // Blok POST langsung yang lama dihapus: tanpa TLS, tanpa auth, skema salah (BUG-10).
   // Versi ikut dilaporkan agar kolom nodes.firmware_version tersinkron di server.
-  FirebaseClient::updateOtaStatus(targetNode, "success", 100, "", currentVersion);
+  reportOta("success", 100);
   state = FUOTA_GW_COMPLETED;
   return true;
 }

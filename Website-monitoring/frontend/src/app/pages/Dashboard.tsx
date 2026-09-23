@@ -10,10 +10,9 @@ import {
   AlertTriangle,
   AlertCircle,
 } from 'lucide-react';
-import { api, SensorItem } from '../lib/api';
+import { api, DeviceItem } from '../lib/api';
 import { DeviceData } from '../components/SensorStatus';
 import { useLanguage } from '../context/LanguageContext';
-import { DynamicSensorCard } from '../components/DynamicSensorCard';
 
 export function Dashboard() {
   const { t } = useLanguage();
@@ -45,7 +44,8 @@ export function Dashboard() {
   });
 
   const [device, setDevice] = useState<DeviceData | null>(null);
-  const [dynamicSensors, setDynamicSensors] = useState<SensorItem[]>([]);
+  // Daftar perangkat — sumber identik dengan menu Perangkat Sensor (GET /api/devices)
+  const [devices, setDevices] = useState<DeviceItem[]>([]);
   const [primaryNodeId, setPrimaryNodeId] = useState<string | number | null>(null);
 
   // Fetch Live Data
@@ -117,14 +117,14 @@ export function Dashboard() {
       };
       setDevice(mappedDevice);
 
-      // Fetch dynamic sensors
+      // Fetch daftar perangkat (sama persis dengan menu Perangkat Sensor)
       try {
-        const sensorsRes = await api.deviceSensors(primaryNode.id);
-        if (sensorsRes.data && Array.isArray(sensorsRes.data)) {
-          setDynamicSensors(sensorsRes.data.filter((s: SensorItem) => s.is_active));
+        const devRes = await api.devices();
+        if (devRes.data && Array.isArray(devRes.data)) {
+          setDevices(devRes.data);
         }
       } catch (e) {
-        // dynamic sensors optional
+        // daftar perangkat opsional, tabel menampilkan empty state
       }
 
       setMetrics({
@@ -508,19 +508,90 @@ export function Dashboard() {
           </div>
         </div>
 
-        {/* Dynamic Sensors (Jika ada yang ditambahkan dari menu Perangkat) */}
-        {dynamicSensors.length > 0 && (
-          <div className="mt-6 pt-4 border-t border-gray-100 dark:border-gray-800">
-            <h4 className="text-xs font-bold text-gray-600 dark:text-gray-400 uppercase tracking-wider mb-3">
-              Sensor Tambahan Dinamis ({dynamicSensors.length})
-            </h4>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-              {dynamicSensors.map((s) => (
-                <DynamicSensorCard key={s.id} sensor={s} />
-              ))}
-            </div>
-          </div>
-        )}
+        {/* Footer Call-to-Action — hanya di bagian Status Fisik */}
+        <div className="pt-3 mt-4 border-t border-gray-100 dark:border-gray-800/80 text-xs font-semibold text-blue-600 dark:text-blue-400">
+          <Link to="/physical">Buka Detail Fisik Tandon →</Link>
+        </div>
+      </div>
+
+      {/* ======================= DAFTAR PERANGKAT (TERPISAH) ======================= */}
+      <div className="rounded-3xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 sm:p-6 shadow-xs">
+        {/* Daftar Perangkat — sumber identik dengan menu Perangkat Sensor */}
+        <div className="flex items-center justify-between gap-3 mb-1">
+          <h3 className="text-base font-bold text-gray-900 dark:text-white border-l-4 border-blue-600 pl-3">
+            Daftar Perangkat
+          </h3>
+          <Link
+            to="/devices"
+            className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
+          >
+            Kelola di Perangkat Sensor →
+          </Link>
+        </div>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+          {devices.filter((d) => (d.connection || (d.is_online ? 'ONLINE' : 'OFFLINE')) === 'ONLINE').length} online dari {devices.length} perangkat • data sama dengan menu Perangkat Sensor
+        </p>
+        <div className="overflow-x-auto rounded-2xl border border-gray-100 dark:border-gray-800">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-gray-50 dark:bg-gray-800/80 text-gray-500 font-semibold border-b border-gray-100 dark:border-gray-800">
+              <tr>
+                <th className="px-4 py-3">Perangkat</th>
+                <th className="px-4 py-3">Jenis</th>
+                <th className="px-4 py-3">Lokasi</th>
+                <th className="px-4 py-3">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+              {devices.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-4 py-8 text-center text-gray-500">
+                    Belum ada perangkat terdaftar. Tambahkan di menu Perangkat Sensor.
+                  </td>
+                </tr>
+              ) : (
+                devices.map((dev) => {
+                  const conn = dev.connection || (dev.is_online ? 'ONLINE' : 'OFFLINE');
+                  return (
+                    <tr key={dev.id} className="hover:bg-blue-50/40 dark:hover:bg-blue-950/20 transition-colors">
+                      <td className="px-4 py-3">
+                        <div className="font-bold text-gray-900 dark:text-white font-mono">{dev.kode_node}</div>
+                        <div className="text-[11px] text-gray-400">{dev.device_name}</div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900/50">
+                          {dev.device_role === 'gateway' ? 'Gateway' : (dev.model_type || 'Node Sensor')}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-gray-600 dark:text-gray-300 font-medium">
+                        {dev.nama_lokasi && dev.nama_lokasi !== '' && dev.nama_lokasi !== '-' ? dev.nama_lokasi : (
+                          <span className="text-gray-400 italic">- (Belum Ditempatkan)</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`text-[11px] font-bold ${
+                            conn === 'ONLINE'
+                              ? 'text-green-600 dark:text-green-400'
+                              : conn === 'STALE'
+                                ? 'text-amber-600 dark:text-amber-400'
+                                : 'text-gray-400 dark:text-gray-500'
+                          }`}
+                        >
+                          {conn === 'ONLINE' ? '● Online' : conn === 'STALE' ? '◐ Stale' : '○ Offline'}
+                        </span>
+                        {typeof dev.seconds_ago === 'number' && (
+                          <span className="block text-[10px] text-gray-400">
+                            terlihat {dev.seconds_ago < 60 ? `${dev.seconds_ago} dtk` : `${Math.round(dev.seconds_ago / 60)} mnt`} lalu
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* ======================= KOTAK "FITUR" (SESUAI PROMPT FINAL REVISI 6) ======================= */}

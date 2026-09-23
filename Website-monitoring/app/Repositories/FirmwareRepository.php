@@ -14,6 +14,7 @@ class FirmwareRepository
                 $q->latest();
             }])->orderBy('created_at', 'desc')->get()->map(function ($fw) {
                 $arr = $fw->toArray();
+                $arr['active_ota_count'] = $fw->otaUpdates->whereIn('status', ['pending', 'downloading', 'installing'])->count();
                 $latestOta = $fw->otaUpdates->first();
                 $arr['latest_ota'] = $latestOta ? [
                     'id' => $latestOta->id,
@@ -23,6 +24,7 @@ class FirmwareRepository
                     'error_message' => $latestOta->error_message,
                     'scheduled_at' => $latestOta->scheduled_at ? $latestOta->scheduled_at->toIso8601String() : null,
                     'completed_at' => $latestOta->completed_at ? $latestOta->completed_at->toIso8601String() : null,
+                    'updated_at' => $latestOta->updated_at ? $latestOta->updated_at->toIso8601String() : null,
                     'node_name' => $latestOta->kode_node ?: $latestOta->node_id,
                     'kode_node' => $latestOta->kode_node ?: $latestOta->node_id,
                 ] : null;
@@ -67,6 +69,7 @@ class FirmwareRepository
                 'error_message' => $latestOta->error_message,
                 'scheduled_at' => $latestOta->scheduled_at ? $latestOta->scheduled_at->toIso8601String() : null,
                 'completed_at' => $latestOta->completed_at ? $latestOta->completed_at->toIso8601String() : null,
+                'updated_at' => $latestOta->updated_at ? $latestOta->updated_at->toIso8601String() : null,
                 'node_name' => $latestOta->kode_node ?: $latestOta->node_id,
                 'kode_node' => $latestOta->kode_node ?: $latestOta->node_id,
             ] : null;

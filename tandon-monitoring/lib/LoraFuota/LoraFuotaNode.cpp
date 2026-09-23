@@ -117,6 +117,23 @@ bool LoraFuotaNode::processPacket(int packetSize) {
         return true;
       }
 
+      // Penjaga anti-flash-ulang: tolak versi yang sudah berjalan (banding longgar,
+      // "v1.0.2" dianggap sama dengan "1.0.2"). Node tetap IDLE, flash tidak tersentuh.
+      {
+        String offered = version;
+        String running = runningVersion;
+        offered.trim();
+        running.trim();
+        if (offered.startsWith("v") || offered.startsWith("V")) offered = offered.substring(1);
+        if (running.startsWith("v") || running.startsWith("V")) running = running.substring(1);
+        if (running.length() > 0 && offered == running) {
+          Serial.printf("[FUOTA Node] Versi %s sudah berjalan. Tolak tanpa flash ulang.\n",
+                        version.c_str());
+          sendNack(FUOTA_CMD_ANNOUNCE, 0, FUOTA_STATUS_ALREADY_LATEST);
+          return true;
+        }
+      }
+
       Serial.println("\n========================================");
       Serial.println("[FUOTA Node] ANNOUNCEMENT PEMBARUAN DITERIMA!");
       Serial.printf("[FUOTA Node] Versi: %s | Ukuran: %u bytes (%u chunks)\n",

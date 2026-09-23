@@ -44,11 +44,12 @@ export function Layout() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [dashboardExpanded, setDashboardExpanded] = useState(false);
   const location = useLocation();
-  const isDashboardSectionActive = ['/', '/water-quality', '/environment'].includes(location.pathname);
+  const isDashboardSectionActive = ['/', '/water-quality', '/environment', '/physical'].includes(location.pathname);
 
   const dashboardSubItems = [
     { path: '/water-quality', label: 'Kualitas Air' },
     { path: '/environment', label: 'Lingkungan' },
+    { path: '/physical', label: 'Fisik Tandon' },
   ];
 
   /* =========================

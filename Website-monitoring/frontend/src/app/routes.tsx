@@ -10,6 +10,7 @@ import { Settings } from './pages/Settings';
 import { DevicesManagement } from './pages/DevicesManagement';
 import { WaterQualityDetail } from './pages/WaterQualityDetail';
 import { EnvironmentDetail } from './pages/EnvironmentDetail';
+import { WaterPhysicalDetail } from './pages/WaterPhysicalDetail';
 import { NotFound } from './pages/NotFound';
 
 export const router = createBrowserRouter([
@@ -28,6 +29,7 @@ export const router = createBrowserRouter([
       { index: true, Component: Dashboard },
       { path: 'water-quality', Component: WaterQualityDetail },
       { path: 'environment', Component: EnvironmentDetail },
+      { path: 'physical', Component: WaterPhysicalDetail },
       { path: 'ai-analytics', Component: AIAnalytics },
       { path: 'alerts', Component: Alerts },
       { path: 'devices', Component: DevicesManagement },

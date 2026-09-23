@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Repositories\NodeRepository;
+use App\Repositories\OtaUpdateRepository;
 use App\Services\SensorReconcileService;
 use Illuminate\Http\Request;
 
@@ -12,7 +13,19 @@ class DeviceLifecycleController extends Controller
     public function __construct(
         protected NodeRepository $nodeRepo,
         protected SensorReconcileService $reconcile,
+        protected OtaUpdateRepository $otaRepo,
     ) {}
+
+    /**
+     * Sinkronisasi status OTA dari versi yang dilaporkan device: tutup job aktif
+     * yang targetnya sudah tercapai. Self-healing untuk laporan yang hilang.
+     */
+    protected function reconcileOtaStatus(string $kodeNode, ?string $reportedVersion): void
+    {
+        if ($reportedVersion !== null && $reportedVersion !== '') {
+            $this->otaRepo->reconcileByReportedVersion($kodeNode, $reportedVersion);
+        }
+    }
 
     /**
      * Dipanggil SEKALI saat ESP32 boot & WiFi connect (audit.md §5.1–§5.3).
@@ -74,6 +87,7 @@ class DeviceLifecycleController extends Controller
 
         $this->nodeRepo->update($node['id'], $info);
         $node = $this->nodeRepo->find($node['id']);
+        $this->reconcileOtaStatus($kode, $node['firmware_version'] ?? null);
 
         // §5.4: entry yang sudah dibuat di web duluan (punya lokasi) langsung active
         // saat hello pertama cocok — tanpa klik Daftarkan lagi.
@@ -112,6 +126,7 @@ class DeviceLifecycleController extends Controller
             'device_key' => ['required', 'string'],
             'uptime' => ['nullable', 'integer', 'min:0'],
             'wifi_rssi' => ['nullable', 'integer'],
+            'firmware_version' => ['nullable', 'string', 'max:30'],
         ]);
 
         $node = $this->nodeRepo->findByKodeNode($validated['device_id']);
@@ -127,8 +142,13 @@ class DeviceLifecycleController extends Controller
             return response()->json(['message' => 'Device key tidak valid.'], 401);
         }
 
-        $this->nodeRepo->update($node['id'], ['last_seen_at' => now()]);
+        $heartbeatUpdate = ['last_seen_at' => now()];
+        if (! empty($validated['firmware_version'])) {
+            $heartbeatUpdate['firmware_version'] = $validated['firmware_version'];
+        }
+        $this->nodeRepo->update($node['id'], $heartbeatUpdate);
         $node = $this->nodeRepo->find($node['id']);
+        $this->reconcileOtaStatus($validated['device_id'], $node['firmware_version'] ?? null);
         $conn = $this->nodeRepo->connectionStatus($node);
 
         return response()->json([

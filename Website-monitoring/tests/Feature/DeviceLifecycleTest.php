@@ -2,8 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Models\Firmware;
 use App\Models\Location;
 use App\Models\Node;
+use App\Models\OtaUpdate;
 use App\Models\Sensor;
 use App\Models\SensorType;
 use App\Models\User;
@@ -245,5 +247,134 @@ class DeviceLifecycleTest extends TestCase
         $res = $this->getJson('/api/devices/pending')->assertOk();
         $this->assertTrue(collect($res->json('data'))->pluck('kode_node')->contains('ESP32-NODE-02'));
         $res = $this->getJson('/api/devices/discover')->assertOk()->assertJsonPath('detected', true);
+    }
+
+    public function test_trigger_ota_dedup_and_manifest_unescaped(): void
+    {
+        $this->actingAsUser();
+        $node = Node::factory()->create(['kode_node' => 'ESP32-NODE-01', 'status' => 'active']);
+        $fw = Firmware::create([
+            'version' => 'v9.9.9', 'name' => 'Test FW', 'file_path' => 'firmwares/test.bin',
+            'file_size' => 100, 'target_device_model' => 'Node Sensor', 'is_active' => true,
+        ]);
+
+        $this->postJson("/api/devices/{$node->id}/ota/trigger", ['firmware_id' => $fw->id])->assertOk();
+        // Trigger kedua firmware sama tidak membuat duplikat
+        $this->postJson("/api/devices/{$node->id}/ota/trigger", ['firmware_id' => $fw->id])->assertOk();
+        $this->assertEquals(1, OtaUpdate::where('kode_node', 'ESP32-NODE-01')->count());
+
+        // Manifest mengandung status + URL tanpa escape backslash (parser naive ESP32)
+        $res = $this->getJson('/api/firmware/ota/check?device=ESP32-NODE-01')->assertOk();
+        $res->assertJsonPath('update_available', true)->assertJsonPath('status', 'pending');
+        $this->assertStringNotContainsString('\\/', $res->getContent());
+    }
+
+    public function test_report_ota_status_closes_all_device_pendings(): void
+    {
+        $this->actingAsUser();
+        $node = Node::factory()->create(['kode_node' => 'ESP32-NODE-01', 'status' => 'active']);
+        $fw = Firmware::create([
+            'version' => 'v9.9.9', 'name' => 'Test FW', 'file_path' => 'firmwares/test.bin',
+            'file_size' => 100, 'is_active' => true,
+        ]);
+        foreach (range(1, 3) as $i) {
+            OtaUpdate::create([
+                'node_id' => (string) $node->id, 'kode_node' => 'ESP32-NODE-01',
+                'firmware_id' => $fw->id, 'status' => 'pending', 'progress_percent' => 0,
+            ]);
+        }
+
+        // Laporan sukses via skema firmware menutup SEMUA pending device itu
+        $this->postJson('/api/firmware/ota/status', [
+            'kode_node' => 'ESP32-NODE-01', 'status' => 'success', 'progress_percent' => 100,
+        ])->assertOk();
+        $this->assertEquals(0, OtaUpdate::where('kode_node', 'ESP32-NODE-01')
+            ->whereIn('status', ['pending', 'downloading', 'installing'])->count());
+        $this->getJson('/api/firmware/ota/check?device=ESP32-NODE-01')->assertJsonPath('update_available', false);
+    }
+
+    public function test_hello_reconciles_ota_to_reported_version(): void
+    {
+        $node = Node::factory()->create([
+            'kode_node' => 'ESP32-NODE-01', 'status' => 'active',
+            'api_token_hash' => hash('sha256', $this->deviceKey),
+        ]);
+        $fw = Firmware::create([
+            'version' => 'v9.9.9', 'name' => 'Test FW', 'file_path' => 'firmwares/test.bin',
+            'file_size' => 100, 'is_active' => true,
+        ]);
+        OtaUpdate::create([
+            'node_id' => (string) $node->id, 'kode_node' => 'ESP32-NODE-01',
+            'firmware_id' => $fw->id, 'status' => 'downloading', 'progress_percent' => 30,
+        ]);
+
+        // Versi dilaporkan sudah mencapai target → job ditutup otomatis
+        $this->postJson('/api/devices/hello', [
+            'device_id' => 'ESP32-NODE-01', 'device_key' => $this->deviceKey,
+            'firmware_version' => 'v9.9.9',
+        ])->assertOk();
+        $this->assertEquals(0, OtaUpdate::where('kode_node', 'ESP32-NODE-01')
+            ->whereIn('status', ['pending', 'downloading', 'installing'])->count());
+
+        // Versi lebih lama dilaporkan → job tidak disentuh
+        OtaUpdate::create([
+            'node_id' => (string) $node->id, 'kode_node' => 'ESP32-NODE-01',
+            'firmware_id' => $fw->id, 'status' => 'pending', 'progress_percent' => 0,
+        ]);
+        $this->postJson('/api/devices/heartbeat', [
+            'device_id' => 'ESP32-NODE-01', 'device_key' => $this->deviceKey,
+            'firmware_version' => 'v1.0.0',
+        ])->assertOk();
+        $this->assertEquals(1, OtaUpdate::where('kode_node', 'ESP32-NODE-01')
+            ->whereIn('status', ['pending', 'downloading', 'installing'])->count());
+    }
+
+    public function test_trigger_same_version_blocked_unless_forced(): void
+    {
+        $this->actingAsUser();
+        $node = Node::factory()->create([
+            'kode_node' => 'ESP32-NODE-01', 'status' => 'active', 'firmware_version' => 'v1.0.2',
+        ]);
+        $fw = Firmware::create([
+            'version' => 'v1.0.2', 'name' => 'Same FW', 'file_path' => 'firmwares/same.bin',
+            'file_size' => 100, 'is_active' => true,
+        ]);
+
+        $this->postJson("/api/devices/{$node->id}/ota/trigger", ['firmware_id' => $fw->id])
+            ->assertStatus(422)->assertJsonPath('code', 'same_version');
+        $this->assertEquals(0, OtaUpdate::count());
+
+        $this->postJson("/api/devices/{$node->id}/ota/trigger", ['firmware_id' => $fw->id, 'force' => true])
+            ->assertOk();
+        $this->assertEquals(1, OtaUpdate::count());
+    }
+
+    public function test_report_ota_id_closes_exact_row_only(): void
+    {
+        $this->actingAsUser();
+        $node = Node::factory()->create(['kode_node' => 'ESP32-NODE-01', 'status' => 'active']);
+        $fwA = Firmware::create([
+            'version' => 'v9.9.8', 'name' => 'FW A', 'file_path' => 'firmwares/a.bin',
+            'file_size' => 100, 'is_active' => true,
+        ]);
+        $fwB = Firmware::create([
+            'version' => 'v9.9.9', 'name' => 'FW B', 'file_path' => 'firmwares/b.bin',
+            'file_size' => 100, 'is_active' => true,
+        ]);
+        $otaA = OtaUpdate::create([
+            'node_id' => (string) $node->id, 'kode_node' => 'ESP32-NODE-01',
+            'firmware_id' => $fwA->id, 'status' => 'pending', 'progress_percent' => 0,
+        ]);
+        $otaB = OtaUpdate::create([
+            'node_id' => (string) $node->id, 'kode_node' => 'ESP32-NODE-01',
+            'firmware_id' => $fwB->id, 'status' => 'pending', 'progress_percent' => 0,
+        ]);
+
+        $this->postJson('/api/firmware/ota/status', [
+            'ota_id' => $otaA['id'], 'status' => 'success', 'progress' => 100,
+        ])->assertOk();
+
+        $this->assertEquals('success', OtaUpdate::find($otaA['id'])->status);
+        $this->assertEquals('pending', OtaUpdate::find($otaB['id'])->status);
     }
 }

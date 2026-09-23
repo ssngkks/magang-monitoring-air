@@ -26,6 +26,10 @@ public:
   // Return true jika paket adalah FUOTA packet yang diproses
   bool processPacket(int packetSize);
 
+  // Versi firmware yang sedang berjalan (di-set dari main setup).
+  // Dipakai menolak ANNOUNCE versi sama agar tidak flash ulang.
+  void setRunningVersion(const String &ver) { runningVersion = ver; }
+
   // Loop tick untuk menangani timeout jika transmisi terputus di tengah jalan
   void tick();
 
@@ -41,6 +45,7 @@ private:
   uint16_t totalChunks;
   uint16_t expectedChunkSeq;
   String newVersion;
+  String runningVersion;
 
   unsigned long lastActivityTime;
   static const unsigned long FUOTA_TIMEOUT_MS = 60000; // 60 detik timeout jika terputus

@@ -21,6 +21,13 @@ import {
   ReferenceLine,
 } from 'recharts';
 
+function formatWaktu(iso: string | null | undefined): string {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '-';
+  return `${d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}, ${d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`;
+}
+
 export function WaterQualityDetail() {
   const [timeRange, setTimeRange] = useState<'today' | '7d' | '30d' | 'custom'>('today');
   const [customStartDate, setCustomStartDate] = useState<string>(
@@ -34,6 +41,8 @@ export function WaterQualityDetail() {
   const [lastSyncTime, setLastSyncTime] = useState('');
   const [lastSyncDate, setLastSyncDate] = useState('');
   const [chartData, setChartData] = useState<any[]>([]);
+  const [tableRows, setTableRows] = useState<any[]>([]);
+  const [tableLoading, setTableLoading] = useState(false);
 
   const [metrics, setMetrics] = useState({
     ph: 7.2,
@@ -112,6 +121,37 @@ export function WaterQualityDetail() {
     const interval = setInterval(loadData, 10000);
     return () => clearInterval(interval);
   }, [loadData]);
+
+  // Tabel 100 data terbaru — mengikuti rentang aktif (data lengkap ada di Reports)
+  useEffect(() => {
+    let cancelled = false;
+    const fetchTable = async () => {
+      try {
+        setTableLoading(true);
+        const { data: nodes } = await api.nodes();
+        if (!nodes.length) {
+          if (!cancelled) setTableRows([]);
+          return;
+        }
+        const params = new URLSearchParams({ range: timeRange, per_page: '100' });
+        if (timeRange === 'custom') {
+          params.set('from', customStartDate);
+          params.set('to', customEndDate);
+        }
+        const res = await api.sensorData(String(nodes[0].id), params.toString());
+        const readings = res.data?.data || (Array.isArray(res.data) ? res.data : []);
+        if (!cancelled) setTableRows(readings.slice(0, 100));
+      } catch {
+        if (!cancelled) setTableRows([]);
+      } finally {
+        if (!cancelled) setTableLoading(false);
+      }
+    };
+    fetchTable();
+    return () => {
+      cancelled = true;
+    };
+  }, [timeRange, customStartDate, customEndDate]);
 
   // Evaluasi pH
   const phValue = metrics.ph;
@@ -438,7 +478,7 @@ export function WaterQualityDetail() {
           <div className="flex items-center gap-2.5 min-w-0">
             <div>
               <h3 className="text-base font-bold text-gray-900 dark:text-white">
-                Diagnosis Edge AI (TinyML On-Device)
+                Analisis AI
               </h3>
               <p className="text-xs text-gray-500 dark:text-gray-400">
                 Inferensi machine learning real-time langsung dari mikrokontroler ESP32
@@ -466,6 +506,78 @@ export function WaterQualityDetail() {
 
         <div className="p-4 rounded-xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 text-xs text-gray-700 dark:text-gray-300 leading-relaxed">
           <strong>Hasil Analisis Otomatis:</strong> {metrics.aiDiagnosis}
+        </div>
+      </div>
+
+      {/* Tabel data — 100 terbaru mengikuti rentang aktif */}
+      <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 sm:p-6 shadow-xs">
+        <div className="flex items-center justify-between gap-3 mb-1">
+          <h3 className="text-base font-bold text-gray-900 dark:text-white border-l-4 border-blue-600 pl-3">
+            Data Kualitas Air
+          </h3>
+          <Link
+            to="/reports?parameter=ph"
+            className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
+          >
+            Data lengkap di Reports →
+          </Link>
+        </div>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+          100 data terbaru • {timeRange === 'today' ? 'Hari Ini' : timeRange === '7d' ? '7 Hari Terakhir' : timeRange === '30d' ? '30 Hari' : 'Rentang Kustom'}
+        </p>
+        <div className="overflow-x-auto rounded-2xl border border-gray-100 dark:border-gray-800 max-h-[520px] overflow-y-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-gray-50 dark:bg-gray-800/80 text-gray-500 font-semibold border-b border-gray-100 dark:border-gray-800 sticky top-0 z-10">
+              <tr>
+                <th className="px-4 py-3">Waktu</th>
+                <th className="px-4 py-3">pH</th>
+                <th className="px-4 py-3">Status pH</th>
+                <th className="px-4 py-3">Kekeruhan</th>
+                <th className="px-4 py-3">Status Kekeruhan</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+              {tableLoading ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-gray-500">Memuat data...</td>
+                </tr>
+              ) : tableRows.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
+                    {hasLoaded ? 'Belum ada data pada rentang ini.' : 'Memuat data...'}
+                  </td>
+                </tr>
+              ) : (
+                tableRows.map((r: any) => {
+                  const ph = r.ph !== null && r.ph !== undefined ? Number(r.ph) : null;
+                  const turb = r.turbidity !== null && r.turbidity !== undefined ? Number(r.turbidity) : null;
+                  const phOk = ph !== null && ph >= 6.5 && ph <= 8.5;
+                  const turbLabel = turb === null ? '-' : turb <= 5 ? 'Normal' : turb <= 25 ? 'Warning' : 'Bahaya';
+                  return (
+                    <tr key={r.id ?? r.created_at} className="hover:bg-blue-50/40 dark:hover:bg-blue-950/20 transition-colors">
+                      <td className="px-4 py-3 text-gray-600 dark:text-gray-300 whitespace-nowrap">{formatWaktu(r.created_at)}</td>
+                      <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-white">
+                        {ph !== null ? ph.toFixed(2) : '-'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`font-bold ${ph === null ? 'text-gray-400' : phOk ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                          {ph === null ? '-' : phOk ? 'Normal' : 'Bahaya'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-white">
+                        {turb !== null ? `${turb} NTU` : '-'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`font-bold ${turb === null ? 'text-gray-400' : turb <= 5 ? 'text-green-600 dark:text-green-400' : turb <= 25 ? 'text-yellow-500 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}`}>
+                          {turbLabel}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

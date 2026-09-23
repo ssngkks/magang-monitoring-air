@@ -36,6 +36,7 @@ enum FuotaStatus : uint8_t {
   FUOTA_STATUS_TIMEOUT         = 0x06,
   FUOTA_STATUS_UNKNOWN_TARGET  = 0x07,
   FUOTA_STATUS_LEN_ERROR       = 0x08,
+  FUOTA_STATUS_ALREADY_LATEST  = 0x09, // Node sudah menjalankan versi ini — tolak tanpa flash ulang
 };
 
 namespace LoraFuota {

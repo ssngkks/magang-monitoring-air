@@ -74,7 +74,7 @@ void printSerialStatus() {
   unsigned long vibration = (unsigned long)sensors.get("GETARAN").values[0];
 
   Serial.println("========================================");
-  Serial.println("LORA 1 - NODE SENSOR - STATUS");
+  Serial.println("LORA 1 - NODE SENSOR - STATUS V1.0.2");
   Serial.println("========================================");
   Serial.printf("GETARAN POMPA     : %lu pulsa\n", vibration);
   Serial.printf("KETINGGIAN AIR    : %.1f cm (Max: %d cm)\n", waterLevel, MAX_HEIGHT);
@@ -93,9 +93,10 @@ void printSerialStatus() {
   Serial.println("========================================\n");
 }
 
-// Versi firmware node (dilaporkan saat hello agar dashboard tahu).
+// Versi firmware node (dilaporkan saat hello + penolak ANNOUNCE versi sama).
+// WAJIB di-bump setiap rilis binary node baru agar penjaga anti-flash-ulang akurat.
 #ifndef NODE_FW_VERSION
-#define NODE_FW_VERSION "1.0.0"
+#define NODE_FW_VERSION "v1.0.2"
 #endif
 
 void sendLoraData() {
@@ -156,6 +157,7 @@ void setup() {
   loraReady = LoRa.begin(LORA_FREQ);
   Serial.println(loraReady ? "STATUS LORA       : OK" : "STATUS LORA       : GAGAL");
   fuotaNode.begin();
+  fuotaNode.setRunningVersion(NODE_FW_VERSION);
   Serial.println("STATUS FUOTA LORA : SIAP MENERIMA OTA TANPA KABEL");
   Serial.println("========================================\n");
 

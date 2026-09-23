@@ -30,5 +30,7 @@ namespace FirebaseClient {
 
   // POST /api/firmware/ota/status — lapor progres OTA gateway/FUOTA.
   // version opsional: bila diisi, server sinkronkan nodes.firmware_version.
-  void updateOtaStatus(const String &kodeNode, const String &status, int progress = 0, const String &error = "", const String &version = "");
+  // otaId opsional: nomor job dari manifest — bila diisi, server menutup BARIS
+  // TEPAT itu (tanpa ini, antrean dua versi bisa saling menutup).
+  void updateOtaStatus(const String &kodeNode, const String &status, int progress = 0, const String &error = "", const String &version = "", long otaId = 0);
 }

@@ -52,7 +52,7 @@ static uint32_t extractJsonUint(const String &json, const String &key) {
 
 static bool fetchManifest(const String &url, String &version, String &fwUrl,
                          bool &updateAvailable, String &status,
-                         uint32_t &fileSize, String &checksum) {
+                         uint32_t &fileSize, String &checksum, uint32_t &otaId) {
   HTTPClient http;
   http.setTimeout(10000);
 
@@ -92,6 +92,7 @@ static bool fetchManifest(const String &url, String &version, String &fwUrl,
   status = extractJsonString(body, "status");
   fileSize = extractJsonUint(body, "file_size");
   checksum = extractJsonString(body, "checksum");
+  otaId = extractJsonUint(body, "ota_id");
 
   return (version.length() > 0 && fwUrl.length() > 0);
 }
@@ -126,26 +127,39 @@ void OtaUpdater::checkForUpdate() {
   String fbNodeUrl = "http://" + String(LOCAL_SERVER_HOST) + ":" + String(LOCAL_SERVER_PORT) + "/api/firmware/ota/check?device=" + String(KODE_NODE);
   #endif
   #endif
+  // Gateway cek manifest MILIKNYA SENDIRI (device=GATEWAY_ID), bukan manifest node.
+  // Sebelumnya fbGwUrl = fbNodeUrl sehingga pending OTA gateway tidak pernah terlihat.
   String fbGwUrl = fbNodeUrl;
+  {
+    String nodeParam = "device=" + String(KODE_NODE);
+    String gwParam = "device=" + String(GATEWAY_ID);
+    int di = fbGwUrl.indexOf(nodeParam);
+    if (di != -1) {
+      fbGwUrl = fbGwUrl.substring(0, di) + gwParam + fbGwUrl.substring(di + nodeParam.length());
+    } else if (fbGwUrl.indexOf("device=") == -1) {
+      fbGwUrl += (fbGwUrl.indexOf("?") == -1 ? "?" : "&") + gwParam;
+    }
+  }
 
   // --- CEK NODE SENSOR DULU (prioritas utama - LoRa FUOTA) ---
   static String lastFlashedNodeVersion = "";
   String nodeVer, nodeFwUrl, nodeStatus, nodeChecksum;
   bool nodeUpdateAvail = false;
   uint32_t nodeFileSize = 0;
+  uint32_t nodeOtaId = 0;
 
-  if (fetchManifest(fbNodeUrl, nodeVer, nodeFwUrl, nodeUpdateAvail, nodeStatus, nodeFileSize, nodeChecksum)) {
+  if (fetchManifest(fbNodeUrl, nodeVer, nodeFwUrl, nodeUpdateAvail, nodeStatus, nodeFileSize, nodeChecksum, nodeOtaId)) {
     if (nodeUpdateAvail && (nodeStatus == "pending" || nodeStatus == "installing")) {
       if (nodeVer.length() > 0 && nodeVer == lastFlashedNodeVersion) {
         Serial.printf("[OTA] Node sudah sukses diflash ke versi %s sebelumnya. Tandai selesai di RTDB.\n",
                       nodeVer.c_str());
-        FirebaseClient::updateOtaStatus(KODE_NODE, "success", 100);
+        FirebaseClient::updateOtaStatus(KODE_NODE, "success", 100, "", nodeVer, nodeOtaId);
         return;
       }
 
-      Serial.printf("[OTA] Ditemukan jadwal update LoRa FUOTA untuk NODE (%s) -> Versi: %s\n",
-                    KODE_NODE, nodeVer.c_str());
-      if (fuotaGateway.startFuota(KODE_NODE, nodeFwUrl, nodeVer, nodeFileSize, nodeChecksum)) {
+      Serial.printf("[OTA] Ditemukan jadwal update LoRa FUOTA untuk NODE (%s) -> Versi: %s (job #%u)\n",
+                    KODE_NODE, nodeVer.c_str(), nodeOtaId);
+      if (fuotaGateway.startFuota(KODE_NODE, nodeFwUrl, nodeVer, nodeFileSize, nodeChecksum, nodeOtaId)) {
         lastFlashedNodeVersion = nodeVer;
       }
       return; // Sibuk LoRa FUOTA, skip gateway check
@@ -156,20 +170,22 @@ void OtaUpdater::checkForUpdate() {
   String gwVer, gwFwUrl, gwStatus, gwChecksum;
   bool gwUpdateAvail = false;
   uint32_t gwFileSize = 0;
+  uint32_t gwOtaId = 0;
 
-  if (fetchManifest(fbGwUrl, gwVer, gwFwUrl, gwUpdateAvail, gwStatus, gwFileSize, gwChecksum)) {
+  if (fetchManifest(fbGwUrl, gwVer, gwFwUrl, gwUpdateAvail, gwStatus, gwFileSize, gwChecksum, gwOtaId)) {
     if (gwUpdateAvail && gwStatus == "pending") {
       Serial.printf("[OTA] Ditemukan jadwal update WiFi untuk GATEWAY (%s) -> Versi: %s\n",
                     GATEWAY_ID, gwVer.c_str());
 
-      // Jika versi yang diminta sama dengan versi firmware saat ini (sudah up-to-date)
-      if (gwVer == "v1.0.2" || gwVer == "1.0.2") {
+      // Bandingkan ke versi firmware YANG SEDANG JALAN, bukan angka hardcode
+      String curVer = String(CURRENT_FW_VERSION);
+      if (gwVer == curVer || gwVer == ("v" + curVer)) {
         Serial.println("[OTA] Gateway sudah pada versi ini. Tandai sukses.");
-        FirebaseClient::updateOtaStatus(GATEWAY_ID, "success", 100);
+        FirebaseClient::updateOtaStatus(GATEWAY_ID, "success", 100, "", gwVer, gwOtaId);
 
       } else {
         Serial.println("[OTA] Menjalankan update WiFi internal Gateway dari: " + gwFwUrl);
-        FirebaseClient::updateOtaStatus(GATEWAY_ID, "downloading", 30);
+        FirebaseClient::updateOtaStatus(GATEWAY_ID, "downloading", 30, "", "", gwOtaId);
 
         bool isHttps = gwFwUrl.startsWith("https://");
         t_httpUpdate_return result;
@@ -185,15 +201,26 @@ void OtaUpdater::checkForUpdate() {
         }
 
         if (result == HTTP_UPDATE_OK) {
-          Serial.println("[OTA] Gateway berhasil update! Rebooting...");
-          FirebaseClient::updateOtaStatus(GATEWAY_ID, "success", 100);
-          delay(800);
+          Serial.println("[OTA] Gateway berhasil update! Melaporkan status final...");
+          // Flash lama bisa memutus WiFi: sambungkan ulang dulu agar laporan
+          // success tidak hilang (job nyangkut "flashing" di dashboard).
+          if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("[OTA] WiFi putus setelah flash, menyambung ulang...");
+            WiFi.disconnect();
+            delay(500);
+            WiFi.reconnect();
+            unsigned long t = millis();
+            while (WiFi.status() != WL_CONNECTED && millis() - t < 8000) delay(200);
+          }
+          FirebaseClient::updateOtaStatus(GATEWAY_ID, "success", 100, "", gwVer, gwOtaId);
+          delay(1500); // beri waktu respons server terbaca sebelum restart
+          Serial.println("[OTA] Rebooting...");
           ESP.restart();
           return;
         } else {
           String err = httpUpdate.getLastErrorString();
           Serial.printf("[OTA] GAGAL flash Gateway (%d): %s\n", httpUpdate.getLastError(), err.c_str());
-          FirebaseClient::updateOtaStatus(GATEWAY_ID, "failed", 0, err);
+          FirebaseClient::updateOtaStatus(GATEWAY_ID, "failed", 0, err, "", gwOtaId);
 
           // Reconnect WiFi agar stack bersih setelah timeout besar
           Serial.println("[OTA] Menunggu WiFi recovery...");

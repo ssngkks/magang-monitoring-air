@@ -788,7 +788,20 @@ export function DevicesManagement() {
 
       // Jadwalkan OTA multi-device untuk node yang dicentang
       if (newFw?.id && uploadFirmwareTargetDevices.length > 0) {
-        await api.triggerOtaMulti(newFw.id, uploadFirmwareTargetDevices);
+        try {
+          await api.triggerOtaMulti(newFw.id, uploadFirmwareTargetDevices);
+        } catch (otaErr: any) {
+          // Label sama dengan versi berjalan → tawarkan paksa (anti jebakan label).
+          if (otaErr?.data?.code === 'same_version') {
+            const occupied = otaErr?.data?.blocked?.map((b: any) => b.kode_node).join(', ') || 'perangkat target';
+            if (!window.confirm(`${otaErr.message || 'Perangkat sudah versi ini.'}\n\nPaksa flash ulang ${occupied}?`)) {
+              throw otaErr;
+            }
+            await api.triggerOtaMulti(newFw.id, uploadFirmwareTargetDevices, true);
+          } else {
+            throw otaErr;
+          }
+        }
         for (const devId of uploadFirmwareTargetDevices) {
           api.forceOtaCheck(devId).catch(() => {});
         }
@@ -822,7 +835,7 @@ export function DevicesManagement() {
     setIsUpgradeModalOpen(true);
   };
 
-  const handleExecuteUpgradeMulti = async (instant: boolean) => {
+  const handleExecuteUpgradeMulti = async (instant: boolean, force = false) => {
     if (!targetFirmwareForUpgrade) return;
     if (upgradeSelectedDeviceIds.length === 0) {
       showFeedback('error', 'Perangkat Belum Dipilih', 'WAJIB centang minimal 1 perangkat tujuan untuk melakukan upgrade.');
@@ -832,7 +845,7 @@ export function DevicesManagement() {
     showFeedback('loading', 'Mengirim Instruksi OTA...', `Sedang menyiapkan orkestrasi firmware ke ${upgradeSelectedDeviceIds.length} perangkat...`);
     try {
       setIsUpgradingFromRepo(true);
-      await api.triggerOtaMulti(targetFirmwareForUpgrade.id, upgradeSelectedDeviceIds);
+      const res = await api.triggerOtaMulti(targetFirmwareForUpgrade.id, upgradeSelectedDeviceIds, force);
 
       if (instant) {
         for (const devId of upgradeSelectedDeviceIds) {
@@ -843,11 +856,24 @@ export function DevicesManagement() {
         showFeedback('success', 'Berhasil', `🕐 Upgrade firmware v${targetFirmwareForUpgrade.version} dijadwalkan ke ${upgradeSelectedDeviceIds.length} perangkat.`);
       }
 
+      if (res.blocked && res.blocked.length > 0) {
+        showFeedback('success', 'Sebagian Dilewati', `${res.blocked.length} perangkat sudah versi ini: ${res.blocked.map((b) => b.kode_node).join(', ')}.`);
+      }
+
       setIsUpgradeModalOpen(false);
       setTargetFirmwareForUpgrade(null);
       setUpgradeSelectedDeviceIds([]);
       loadData();
     } catch (err: any) {
+      // Blokir label-sama: tawarkan paksa flash ulang (kasus curiga flash corrupt).
+      if (err?.data?.code === 'same_version' && !force) {
+        const occupied = err?.data?.blocked?.map((b: any) => b.kode_node).join(', ') || 'perangkat target';
+        if (window.confirm(`${err.message || 'Perangkat sudah versi ini.'}\n\nPaksa flash ulang ${occupied}?`)) {
+          setIsUpgradingFromRepo(false);
+          await handleExecuteUpgradeMulti(instant, true);
+          return;
+        }
+      }
       showFeedback('error', 'Gagal Memulai Upgrade', err.message || 'Gagal memulai upgrade firmware.');
     } finally {
       setIsUpgradingFromRepo(false);
@@ -1173,17 +1199,17 @@ export function DevicesManagement() {
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex flex-col gap-1">
-                              <span
-                                className={`inline-flex w-fit items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                                  dev.status === 'active'
-                                    ? 'bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-300 dark:border-green-900/50'
-                                    : dev.status === 'pending'
+                              {dev.status !== 'active' && (
+                                <span
+                                  className={`inline-flex w-fit items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                    dev.status === 'pending'
                                       ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900/50'
                                       : 'bg-gray-100 text-gray-500 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700'
-                                }`}
-                              >
-                                {dev.status === 'active' ? 'Aktif' : dev.status === 'pending' ? 'Menunggu' : 'Nonaktif'}
-                              </span>
+                                  }`}
+                                >
+                                  {dev.status === 'pending' ? 'Menunggu' : 'Nonaktif'}
+                                </span>
+                              )}
                               <span
                                 className={`text-[11px] font-bold ${
                                   (dev.connection || (dev.is_online ? 'ONLINE' : 'OFFLINE')) === 'ONLINE'
@@ -1642,7 +1668,7 @@ export function DevicesManagement() {
                               )}
                               {fw.latest_ota.status === 'success' && (
                                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
-                                  <CheckCircle2 className="w-3 h-3" /> Berhasil (100%)
+                                  <CheckCircle2 className="w-3 h-3" /> Selesai (100%)
                                 </span>
                               )}
                               {fw.latest_ota.status === 'failed' && (
@@ -1651,9 +1677,37 @@ export function DevicesManagement() {
                                 </span>
                               )}
 
+                              {(fw.latest_ota.status === 'downloading' || fw.latest_ota.status === 'installing') && (
+                                <div className="w-full max-w-[220px] h-1.5 rounded-full bg-gray-200 dark:bg-gray-800 overflow-hidden">
+                                  <div
+                                    className="h-full rounded-full bg-blue-600 transition-all"
+                                    style={{ width: `${Math.min(100, Math.max(0, fw.latest_ota.progress_percent || 0))}%` }}
+                                  />
+                                </div>
+                              )}
+
                               <div className="text-[10px] text-gray-400">
+                                <div className="font-mono">#{fw.latest_ota.id} → {fw.latest_ota.kode_node || fw.latest_ota.node_name || fw.latest_ota.node_id}</div>
+                                {(fw.active_ota_count || 0) > 1 && (
+                                  <div className="font-semibold text-indigo-500 dark:text-indigo-300">
+                                    +{(fw.active_ota_count || 0) - 1} job lain mengantre
+                                  </div>
+                                )}
                                 {fw.latest_ota.completed_at && <div>Selesai: {formatDateTime(fw.latest_ota.completed_at)}</div>}
                                 {fw.latest_ota.scheduled_at && !fw.latest_ota.completed_at && <div>Dijadwalkan: {formatDateTime(fw.latest_ota.scheduled_at)}</div>}
+                                {fw.latest_ota.updated_at && !fw.latest_ota.completed_at && (
+                                  <div>
+                                    Progress terakhir: {formatDateTime(fw.latest_ota.updated_at)}
+                                    {Date.now() - new Date(fw.latest_ota.updated_at).getTime() > 3 * 60 * 1000 && (
+                                      <span className="ml-1 font-semibold text-amber-600 dark:text-amber-400">
+                                        (tampak macet — cek Serial/device)
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                                {fw.latest_ota.status === 'failed' && fw.latest_ota.error_message && (
+                                  <div className="text-red-500 dark:text-red-400">Alasan: {fw.latest_ota.error_message}</div>
+                                )}
                               </div>
                             </div>
                           ) : (

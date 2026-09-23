@@ -21,6 +21,13 @@ import {
   ReferenceLine,
 } from 'recharts';
 
+function formatWaktu(iso: string | null | undefined): string {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '-';
+  return `${d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}, ${d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`;
+}
+
 export function EnvironmentDetail() {
   const [timeRange, setTimeRange] = useState<'today' | '7d' | '30d' | 'custom'>('today');
   const [customStartDate, setCustomStartDate] = useState<string>(
@@ -34,6 +41,8 @@ export function EnvironmentDetail() {
   const [lastSyncTime, setLastSyncTime] = useState('');
   const [lastSyncDate, setLastSyncDate] = useState('');
   const [chartData, setChartData] = useState<any[]>([]);
+  const [tableRows, setTableRows] = useState<any[]>([]);
+  const [tableLoading, setTableLoading] = useState(false);
 
   const [metrics, setMetrics] = useState({
     temperature: 28.5,
@@ -133,6 +142,37 @@ export function EnvironmentDetail() {
     const interval = setInterval(loadData, 10000);
     return () => clearInterval(interval);
   }, [loadData]);
+
+  // Tabel 100 data terbaru — mengikuti rentang aktif (data lengkap ada di Reports)
+  useEffect(() => {
+    let cancelled = false;
+    const fetchTable = async () => {
+      try {
+        setTableLoading(true);
+        const { data: nodes } = await api.nodes();
+        if (!nodes.length) {
+          if (!cancelled) setTableRows([]);
+          return;
+        }
+        const params = new URLSearchParams({ range: timeRange, per_page: '100' });
+        if (timeRange === 'custom') {
+          params.set('from', customStartDate);
+          params.set('to', customEndDate);
+        }
+        const res = await api.sensorData(String(nodes[0].id), params.toString());
+        const readings = res.data?.data || (Array.isArray(res.data) ? res.data : []);
+        if (!cancelled) setTableRows(readings.slice(0, 100));
+      } catch {
+        if (!cancelled) setTableRows([]);
+      } finally {
+        if (!cancelled) setTableLoading(false);
+      }
+    };
+    fetchTable();
+    return () => {
+      cancelled = true;
+    };
+  }, [timeRange, customStartDate, customEndDate]);
 
   // Evaluasi Suhu -> Normal / Warning / Bahaya (teks saja)
   const tempVal = metrics.temperature;
@@ -447,6 +487,78 @@ export function EnvironmentDetail() {
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Tabel data — 100 terbaru mengikuti rentang aktif */}
+      <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 sm:p-6 shadow-xs">
+        <div className="flex items-center justify-between gap-3 mb-1">
+          <h3 className="text-base font-bold text-gray-900 dark:text-white border-l-4 border-blue-600 pl-3">
+            Data Lingkungan
+          </h3>
+          <Link
+            to="/reports?parameter=temperature"
+            className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
+          >
+            Data lengkap di Reports →
+          </Link>
+        </div>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+          100 data terbaru • {timeRange === 'today' ? 'Hari Ini' : timeRange === '7d' ? '7 Hari Terakhir' : timeRange === '30d' ? '30 Hari' : 'Rentang Kustom'}
+        </p>
+        <div className="overflow-x-auto rounded-2xl border border-gray-100 dark:border-gray-800 max-h-[520px] overflow-y-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-gray-50 dark:bg-gray-800/80 text-gray-500 font-semibold border-b border-gray-100 dark:border-gray-800 sticky top-0 z-10">
+              <tr>
+                <th className="px-4 py-3">Waktu</th>
+                <th className="px-4 py-3">Suhu</th>
+                <th className="px-4 py-3">Status Suhu</th>
+                <th className="px-4 py-3">Kelembapan</th>
+                <th className="px-4 py-3">Status Kelembapan</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+              {tableLoading ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-gray-500">Memuat data...</td>
+                </tr>
+              ) : tableRows.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
+                    {hasLoaded ? 'Belum ada data pada rentang ini.' : 'Memuat data...'}
+                  </td>
+                </tr>
+              ) : (
+                tableRows.map((r: any) => {
+                  const t = r.temp !== null && r.temp !== undefined ? Number(r.temp) : null;
+                  const h = r.humidity !== null && r.humidity !== undefined ? Number(r.humidity) : null;
+                  const tempLabel = t === null ? '-' : t <= 30 ? 'Normal' : t <= 35 ? 'Warning' : 'Bahaya';
+                  const humLabel = h === null ? '-' : h >= 40 && h <= 70 ? 'Normal' : 'Warning';
+                  return (
+                    <tr key={r.id ?? r.created_at} className="hover:bg-blue-50/40 dark:hover:bg-blue-950/20 transition-colors">
+                      <td className="px-4 py-3 text-gray-600 dark:text-gray-300 whitespace-nowrap">{formatWaktu(r.created_at)}</td>
+                      <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-white">
+                        {t !== null ? `${t.toFixed(1)} °C` : '-'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`font-bold ${t === null ? 'text-gray-400' : t <= 30 ? 'text-green-600 dark:text-green-400' : t <= 35 ? 'text-yellow-500 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}`}>
+                          {tempLabel}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-white">
+                        {h !== null ? `${h.toFixed(1)} %` : '-'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`font-bold ${h === null ? 'text-gray-400' : h >= 40 && h <= 70 ? 'text-green-600 dark:text-green-400' : 'text-yellow-500 dark:text-yellow-400'}`}>
+                          {humLabel}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

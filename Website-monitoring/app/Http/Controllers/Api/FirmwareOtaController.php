@@ -113,6 +113,7 @@ class FirmwareOtaController extends Controller
         $request->validate([
             'firmware_id' => ['required'],
             'server_host' => ['nullable', 'string'],
+            'force' => ['nullable', 'boolean'],
         ]);
 
         $firmware = $this->firmwareRepo->find($request->input('firmware_id'));
@@ -122,6 +123,27 @@ class FirmwareOtaController extends Controller
 
         $node = $this->nodeRepo->find($nodeId);
         $kodeNode = $node['kode_node'] ?? (string) $nodeId;
+
+        // Blokir jebakan label: versi sama dengan yang berjalan akan di-skip device.
+        // Paksa hanya via force:true (kasus curiga flash corrupt).
+        if (! $request->boolean('force') && $this->isSameVersion($firmware['version'] ?? '', $node['firmware_version'] ?? '')) {
+            return response()->json([
+                'message' => 'Perangkat '.$kodeNode.' sudah menjalankan versi '.$firmware['version'].' — update akan di-skip device. Paksa bila yakin.',
+                'code' => 'same_version',
+                'running_version' => $node['firmware_version'] ?? null,
+                'firmware_version' => $firmware['version'] ?? null,
+            ], 422);
+        }
+
+        // Cegah duplikat: firmware sama yang masih aktif tidak dijadwalkan ulang.
+        $existing = $this->otaRepo->getPendingForFirmware((string) $nodeId, $kodeNode, $firmware['id']);
+        if ($existing) {
+            return response()->json([
+                'message' => 'Jadwal update firmware ini sudah menunggu eksekusi — tidak dibuat duplikat.',
+                'data' => $existing,
+                'download_url' => url("/api/firmware/ota/download/{$firmware['id']}"),
+            ]);
+        }
 
         $ota = $this->otaRepo->create([
             'node_id' => (string) $nodeId,
@@ -155,6 +177,7 @@ class FirmwareOtaController extends Controller
             'firmware_id' => ['required'],
             'device_ids' => ['required', 'array', 'min:1'],
             'device_ids.*' => ['required'],
+            'force' => ['nullable', 'boolean'],
         ]);
 
         $firmware = $this->firmwareRepo->find($validated['firmware_id']);
@@ -163,6 +186,9 @@ class FirmwareOtaController extends Controller
         }
 
         $createdUpdates = [];
+        $skipped = 0;
+        $blocked = [];
+        $force = (bool) ($validated['force'] ?? false);
 
         foreach ($validated['device_ids'] as $nodeId) {
             $node = $this->nodeRepo->find($nodeId);
@@ -170,6 +196,22 @@ class FirmwareOtaController extends Controller
                 continue;
             }
             $kodeNode = $node['kode_node'] ?? $nodeId;
+
+            if (! $force && $this->isSameVersion($firmware['version'] ?? '', $node['firmware_version'] ?? '')) {
+                $blocked[] = [
+                    'id' => $node['id'],
+                    'kode_node' => $kodeNode,
+                    'running_version' => $node['firmware_version'] ?? null,
+                ];
+
+                continue;
+            }
+
+            if ($this->otaRepo->getPendingForFirmware((string) $nodeId, (string) $kodeNode, $firmware['id'])) {
+                $skipped++;
+
+                continue;
+            }
 
             $ota = $this->otaRepo->create([
                 'firmware_id' => $firmware['id'],
@@ -182,11 +224,44 @@ class FirmwareOtaController extends Controller
             $createdUpdates[] = $ota;
         }
 
+        // Semua target sudah versi ini dan tanpa force → tolak dengan jelas.
+        if (empty($createdUpdates) && ! empty($blocked)) {
+            return response()->json([
+                'message' => 'Semua perangkat target sudah menjalankan versi '.$firmware['version'].' — tidak ada yang dijadwalkan. Paksa bila yakin.',
+                'code' => 'same_version',
+                'blocked' => $blocked,
+                'count' => 0,
+                'skipped' => $skipped,
+            ], 422);
+        }
+
+        $message = count($createdUpdates).' perangkat berhasil dijadwalkan untuk update firmware v'.$firmware['version'].'.';
+        if ($skipped > 0) {
+            $message .= " {$skipped} perangkat dilewati (sudah menunggu eksekusi).";
+        }
+        if (! empty($blocked)) {
+            $message .= ' '.count($blocked).' perangkat dilewati (sudah versi ini).';
+        }
+
         return response()->json([
-            'message' => count($createdUpdates).' perangkat berhasil dijadwalkan untuk update firmware v'.$firmware['version'].'.',
+            'message' => $message,
             'data' => $createdUpdates,
             'count' => count($createdUpdates),
+            'skipped' => $skipped,
+            'blocked' => $blocked,
         ]);
+    }
+
+    /**
+     * True bila label firmware SAMA dengan versi berjalan (normalisasi v-prefix).
+     * Dipakai memblokir trigger yang pasti di-skip device.
+     */
+    protected function isSameVersion(?string $firmwareVersion, ?string $runningVersion): bool
+    {
+        $fw = OtaUpdateRepository::normalizeVersion($firmwareVersion);
+        $run = OtaUpdateRepository::normalizeVersion($runningVersion);
+
+        return $fw !== '' && $run !== '' && $fw === $run;
     }
 
     public function getOtaStatus($nodeId)
@@ -234,15 +309,18 @@ class FirmwareOtaController extends Controller
 
         $downloadUrl = url("/api/firmware/ota/download/{$fw['id']}");
 
+        // JSON_UNESCAPED_SLASHES: parser JSON naive di ESP32 tidak meng-unescape
+        // `\/`, sehingga URL yang ter-escape merusak host (DNS Failed) saat download.
         return response()->json([
             'update_available' => true,
             'ota_id' => $pending['id'],
+            'status' => $pending['status'] ?? 'pending',
             'version' => $fw['version'],
             'checksum' => $fw['checksum_sha256'] ?? '',
             'file_size' => $fw['file_size'] ?? 0,
             'url' => $downloadUrl,
             'download_url' => $downloadUrl,
-        ]);
+        ], 200, [], JSON_UNESCAPED_SLASHES);
     }
 
     public function downloadFirmware($firmwareId)
@@ -286,12 +364,12 @@ class FirmwareOtaController extends Controller
 
         $otaId = $validated['ota_id'] ?? null;
         if ($otaId) {
+            // Atribusi tepat: tutup baris job yang nomornya dilaporkan device.
             $this->otaRepo->updateStatus($otaId, $validated['status'], $progress, $error);
         } elseif (! empty($device)) {
-            $latestOta = $this->otaRepo->getLatestForNode(null, $device);
-            if ($latestOta) {
-                $this->otaRepo->updateStatus($latestOta['id'], $validated['status'], $progress, $error);
-            }
+            // Fallback binary lama (tanpa ota_id): tutup job device ini yang versinya
+            // cocok — antrean versi lain tidak ikut terbunuh.
+            $this->otaRepo->updateStatusForDevice($device, $validated['status'], $progress, $error, $validated['version'] ?? null);
         }
 
         if ($validated['status'] === 'success') {

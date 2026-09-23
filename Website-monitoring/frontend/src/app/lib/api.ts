@@ -256,15 +256,15 @@ export const api = {
     }),
   deleteFirmware: (id: string | number) =>
     apiFetch<{ message: string }>(`/firmwares/${id}`, { method: 'DELETE' }),
-  triggerOta: (nodeId: string | number, firmwareId: string | number) =>
-    apiFetch<{ message: string; data: any }>(`/devices/${nodeId}/ota/trigger`, {
+  triggerOta: (nodeId: string | number, firmwareId: string | number, force = false) =>
+    apiFetch<{ message: string; data: any; code?: string }>(`/devices/${nodeId}/ota/trigger`, {
       method: 'POST',
-      body: JSON.stringify({ firmware_id: firmwareId }),
+      body: JSON.stringify({ firmware_id: firmwareId, force }),
     }),
-  triggerOtaMulti: (firmwareId: string | number, deviceIds: (string | number)[]) =>
-    apiFetch<{ message: string; data: any[]; count: number }>(`/devices/ota/trigger-multi`, {
+  triggerOtaMulti: (firmwareId: string | number, deviceIds: (string | number)[], force = false) =>
+    apiFetch<{ message: string; data: any[]; count: number; skipped?: number; blocked?: { id: string | number; kode_node: string }[]; code?: string }>(`/devices/ota/trigger-multi`, {
       method: 'POST',
-      body: JSON.stringify({ firmware_id: firmwareId, device_ids: deviceIds }),
+      body: JSON.stringify({ firmware_id: firmwareId, device_ids: deviceIds, force }),
     }),
   otaStatus: (nodeId: string | number) =>
     apiFetch<{ data: OtaStatusItem | null }>(`/devices/${nodeId}/ota/status`),
@@ -401,6 +401,7 @@ export interface PendingDevice extends DeviceItem {
 export interface FirmwareItem {
   id: string | number;
   version: string;
+  active_ota_count?: number;
   name: string;
   file_path?: string | null;
   file_size: number;
@@ -420,6 +421,7 @@ export interface FirmwareItem {
     error_message?: string | null;
     scheduled_at?: string | null;
     completed_at?: string | null;
+    updated_at?: string | null;
     node_name?: string | null;
     kode_node?: string | null;
   } | null;
