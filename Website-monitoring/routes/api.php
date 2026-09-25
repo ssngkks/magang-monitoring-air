@@ -51,6 +51,7 @@ Route::group(['middleware' => $authMiddleware], function () {
     Route::get('/nodes/{nodeId}/sensor-data', [NodeController::class, 'sensorData']);
 
     Route::get('/alerts', [AlertController::class, 'index']);
+    Route::patch('/alerts/read-all', [AlertController::class, 'markAllRead']);
     Route::patch('/alerts/{alertId}/read', [AlertController::class, 'markRead']);
 
     Route::get('/reports/summary', [ReportController::class, 'summary']);

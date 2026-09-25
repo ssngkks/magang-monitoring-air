@@ -161,15 +161,13 @@ export function Dashboard() {
     return () => clearInterval(timer);
   }, [loadSensorData]);
 
-  // Evaluasi Box 1: Kualitas Air (pH & Kekeruhan)
+  // Evaluasi status per sensor: Kualitas Air (pH & Kekeruhan)
   const isPhNormal = metrics.ph >= 6.5 && metrics.ph <= 8.5;
   const isTurbNormal = metrics.turbidity <= 5;
-  const waterQualityGood = isPhNormal && isTurbNormal;
 
-  // Evaluasi Box 2: Lingkungan (Suhu & Kelembapan)
+  // Evaluasi status per sensor: Lingkungan (Suhu & Kelembapan)
   const isTempNormal = metrics.temperature >= 22 && metrics.temperature <= 32;
   const isHumNormal = metrics.humidity >= 40 && metrics.humidity <= 75;
-  const environmentGood = isTempNormal && isHumNormal;
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 lg:space-y-8 w-full max-w-[1600px] mx-auto overflow-x-hidden">
@@ -254,46 +252,31 @@ export function Dashboard() {
         </div>
       )}
 
-      {/* ======================= THE TWO MAIN FEATURED BOXES ======================= */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* ===================== BOX 1: KUALITAS AIR (pH & KEKERUHAN) ===================== */}
-        <div
-          onClick={() => navigate('/water-quality')}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => e.key === 'Enter' && navigate('/water-quality')}
-          className="group relative rounded-3xl p-7 bg-gradient-to-br from-white via-white to-blue-50/40 dark:from-gray-900 dark:via-gray-900 dark:to-blue-950/20 border-2 border-gray-200/80 dark:border-gray-800 shadow-sm hover:border-blue-500 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 cursor-pointer flex flex-col justify-between"
-        >
-          {/* Header Kartu (ikon dihapus sesuai revisi) */}
-          <div>
-            <div className="flex items-center justify-between mb-5">
-              <div className="flex items-center gap-3">
-                <div>
-                  <h2 className="text-xl font-bold text-gray-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors border-l-4 border-blue-600 pl-3">
-                    Kualitas Air
-                  </h2>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    Kombinasi sensor pH-4502C & Optik Kekeruhan
-                  </p>
-                </div>
-              </div>
-
-              {/* Status teks saja: Normal / Warning / Bahaya */}
-              <span
-                className={`text-xs font-bold ${
-                  waterQualityGood
-                    ? 'text-green-600 dark:text-green-400'
-                    : 'text-yellow-500 dark:text-yellow-400'
-                }`}
-              >
-                {waterQualityGood ? 'Normal' : 'Warning'}
-              </span>
+      {/* ======================= SATU CONTAINER UTAMA DASHBOARD ======================= */}
+      <div className="rounded-3xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 sm:p-6 lg:p-8 shadow-xs">
+        {/* ---- Bagian atas: Kualitas Air + Kondisi Lingkungan (grid + separator vertikal, tanpa card) ---- */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-0 lg:divide-x lg:divide-gray-100 dark:lg:divide-gray-800">
+          {/* ===================== BAGIAN: KUALITAS AIR (pH & KEKERUHAN) ===================== */}
+          <section
+            onClick={() => navigate('/water-quality')}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => e.key === 'Enter' && navigate('/water-quality')}
+            className="group cursor-pointer min-w-0 lg:pr-8"
+          >
+            <div className="mb-4">
+              <h2 className="text-xl font-bold text-gray-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors border-l-4 border-blue-600 pl-3">
+                Kualitas Air
+              </h2>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Kombinasi sensor pH-4502C & Optik Kekeruhan
+              </p>
             </div>
 
-            {/* Split Tampilan 2 Sensor: pH (Kiri) & Kekeruhan (Kanan) */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 my-6 p-4 rounded-2xl bg-gray-50/80 dark:bg-gray-800/50 border border-gray-100 dark:border-gray-700/50">
+            {/* Split Tampilan 2 Sensor: pH (Kiri) & Kekeruhan (Kanan) — grid + spacing, tanpa garis */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 my-4">
               {/* Sisi Kiri: pH Air */}
-              <div className="sm:border-r border-gray-200 dark:border-gray-700 sm:pr-3">
+              <div className="min-w-0">
                 <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
                   <span className="font-semibold text-gray-700 dark:text-gray-300">pH Air</span>
                   <span className={`text-[11px] font-bold ${isPhNormal ? 'text-green-600' : 'text-red-600'}`}>
@@ -316,10 +299,11 @@ export function Dashboard() {
                   />
                 </div>
                 <span className="text-[10px] text-gray-400 block mt-1">Target: 6.5 – 8.5 pH</span>
+                <span className="text-[10px] text-gray-400 block mt-1">Sumber sensor: <span className="font-semibold text-gray-500 dark:text-gray-400">PH-4502C</span></span>
               </div>
 
               {/* Sisi Kanan: Kekeruhan */}
-              <div className="sm:pl-3">
+              <div className="min-w-0">
                 <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
                   <span className="font-semibold text-gray-700 dark:text-gray-300">Kekeruhan</span>
                   <span className={`text-[11px] font-bold ${isTurbNormal ? 'text-green-600' : 'text-yellow-500'}`}>
@@ -342,54 +326,37 @@ export function Dashboard() {
                   />
                 </div>
                 <span className="text-[10px] text-gray-400 block mt-1">Target: ≤ 5 NTU</span>
+                <span className="text-[10px] text-gray-400 block mt-1">Sumber sensor: <span className="font-semibold text-gray-500 dark:text-gray-400">Sensor Kekeruhan Air</span></span>
               </div>
             </div>
-          </div>
 
-          {/* Footer Call-to-Action */}
-          <div className="pt-3 border-t border-gray-100 dark:border-gray-800/80 text-xs font-semibold text-blue-600 dark:text-blue-400">
-            <span>Buka Detail Lengkap Kualitas Air</span>
-          </div>
-        </div>
+            {/* Footer Call-to-Action */}
+            <div className="pt-2 text-xs font-semibold text-blue-600 dark:text-blue-400">
+              <span>Buka Detail Lengkap Kualitas Air</span>
+            </div>
+          </section>
 
-        {/* ===================== BOX 2: KONDISI LINGKUNGAN (SUHU & KELEMBAPAN) ===================== */}
-        <div
-          onClick={() => navigate('/environment')}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => e.key === 'Enter' && navigate('/environment')}
-          className="group relative rounded-3xl p-7 bg-gradient-to-br from-white via-white to-blue-50/40 dark:from-gray-900 dark:via-gray-900 dark:to-blue-950/20 border-2 border-gray-200/80 dark:border-gray-800 shadow-sm hover:border-blue-500 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 cursor-pointer flex flex-col justify-between"
-        >
-          {/* Header Kartu (ikon dihapus sesuai revisi) */}
-          <div>
-            <div className="flex items-center justify-between mb-5">
-              <div className="flex items-center gap-3">
-                <div>
-                  <h2 className="text-xl font-bold text-gray-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors border-l-4 border-blue-600 pl-3">
-                    Kondisi Lingkungan
-                  </h2>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    Kombinasi sensor Suhu Udara & Kelembapan DHT22
-                  </p>
-                </div>
-              </div>
-
-              {/* Status teks saja */}
-              <span
-                className={`text-xs font-bold ${
-                  environmentGood
-                    ? 'text-green-600 dark:text-green-400'
-                    : 'text-yellow-500 dark:text-yellow-400'
-                }`}
-              >
-                {environmentGood ? 'Normal' : 'Warning'}
-              </span>
+          {/* ===================== BAGIAN: KONDISI LINGKUNGAN (SUHU & KELEMBAPAN) ===================== */}
+          <section
+            onClick={() => navigate('/environment')}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => e.key === 'Enter' && navigate('/environment')}
+            className="group cursor-pointer min-w-0 lg:pl-8"
+          >
+            <div className="mb-4">
+              <h2 className="text-xl font-bold text-gray-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors border-l-4 border-blue-600 pl-3">
+                Kondisi Lingkungan
+              </h2>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Kombinasi sensor Suhu Udara & Kelembapan DHT22
+              </p>
             </div>
 
-            {/* Split Tampilan 2 Sensor: Suhu (Kiri) & Kelembapan (Kanan) */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 my-6 p-4 rounded-2xl bg-gray-50/80 dark:bg-gray-800/50 border border-gray-100 dark:border-gray-700/50">
+            {/* Split Tampilan 2 Sensor: Suhu (Kiri) & Kelembapan (Kanan) — grid + spacing, tanpa garis */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 my-4">
               {/* Sisi Kiri: Suhu */}
-              <div className="sm:border-r border-gray-200 dark:border-gray-700 sm:pr-3">
+              <div className="min-w-0">
                 <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
                   <span className="font-semibold text-gray-700 dark:text-gray-300">Suhu Udara</span>
                   <span className={`text-[11px] font-bold ${isTempNormal ? 'text-green-600' : 'text-yellow-500'}`}>
@@ -410,10 +377,11 @@ export function Dashboard() {
                   />
                 </div>
                 <span className="text-[10px] text-gray-400 block mt-1">Normal: 22 – 30 °C</span>
+                <span className="text-[10px] text-gray-400 block mt-1">Sumber sensor: <span className="font-semibold text-gray-500 dark:text-gray-400">DHT22</span></span>
               </div>
 
               {/* Sisi Kanan: Kelembapan */}
-              <div className="sm:pl-3">
+              <div className="min-w-0">
                 <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
                   <span className="font-semibold text-gray-700 dark:text-gray-300">Kelembapan</span>
                   <span className={`text-[11px] font-bold ${isHumNormal ? 'text-green-600' : 'text-yellow-500'}`}>
@@ -434,21 +402,23 @@ export function Dashboard() {
                   />
                 </div>
                 <span className="text-[10px] text-gray-400 block mt-1">Optimal: 40 – 70 %</span>
+                <span className="text-[10px] text-gray-400 block mt-1">Sumber sensor: <span className="font-semibold text-gray-500 dark:text-gray-400">DHT22</span></span>
               </div>
             </div>
-          </div>
 
-          {/* Footer Call-to-Action */}
-          <div className="pt-3 border-t border-gray-100 dark:border-gray-800/80 text-xs font-semibold text-blue-600 dark:text-blue-400">
-            <span>Buka Detail Lengkap Lingkungan</span>
-          </div>
+            {/* Footer Call-to-Action */}
+            <div className="pt-2 text-xs font-semibold text-blue-600 dark:text-blue-400">
+              <span>Buka Detail Lengkap Lingkungan</span>
+            </div>
+          </section>
         </div>
-      </div>
 
-      {/* ======================= TANDON & STABILITAS FISIK (BARIS RINGKAS) ======================= */}
-      <div className="rounded-3xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 sm:p-6 shadow-xs">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2.5">
+        {/* Garis pembatas tipis antar bagian */}
+        <div className="my-5 border-t border-gray-100 dark:border-gray-800" />
+
+        {/* ======================= BAGIAN: STATUS FISIK & KAPASITAS TANDON ======================= */}
+        <section>
+          <div className="mb-3">
             <div>
               <h3 className="text-base font-bold text-gray-900 dark:text-white border-l-4 border-blue-600 pl-3">
                 Status Fisik & Kapasitas Tandon Air
@@ -458,193 +428,202 @@ export function Dashboard() {
               </p>
             </div>
           </div>
-        </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-3 gap-4 pt-2">
-          {/* Ketinggian Air */}
-          <div className="rounded-2xl p-4 bg-gray-50 dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700/60 min-w-0">
-            <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">Ketinggian Air</span>
-            <div className="flex items-baseline gap-2 mt-1 mb-2">
-              <span className="text-2xl font-black text-gray-900 dark:text-white font-mono">
-                {metrics.waterLevel.toFixed(1)}
-              </span>
-              <span className="text-xs text-gray-400">cm / 100 cm</span>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
+            {/* Ketinggian Air */}
+            <div className="min-w-0">
+              <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">Ketinggian Air</span>
+              <div className="flex items-baseline gap-2 mt-1 mb-2">
+                <span className="text-2xl font-black text-gray-900 dark:text-white font-mono">
+                  {metrics.waterLevel.toFixed(1)}
+                </span>
+                <span className="text-xs text-gray-400">cm / 100 cm</span>
+              </div>
+              <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-blue-600 transition-all duration-500"
+                  style={{ width: `${Math.min(metrics.waterLevel, 100)}%` }}
+                />
+              </div>
+              <span className="text-[10px] text-gray-400 block mt-1">Sumber sensor: <span className="font-semibold text-gray-500 dark:text-gray-400">Ultrasonic Level Air Tandon</span></span>
             </div>
-            <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-blue-600 transition-all duration-500"
-                style={{ width: `${Math.min(metrics.waterLevel, 100)}%` }}
-              />
+
+            {/* Stabilitas Wadah MPU6050 (titik status dihapus, hanya teks) */}
+            <div className="min-w-0">
+              <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">Stabilitas Tangki</span>
+              <div className="flex items-center gap-2 mt-1 mb-2">
+                <span className={`text-lg font-bold font-mono ${
+                  metrics.stabilityStatus === 'Stabil' ? 'text-green-600 dark:text-green-400'
+                  : metrics.stabilityStatus === 'Pergerakan ringan' ? 'text-yellow-500 dark:text-yellow-400'
+                  : 'text-red-600 dark:text-red-400'
+                }`}>
+                  {metrics.stabilityStatus === 'Stabil' ? 'Normal' : metrics.stabilityStatus === 'Pergerakan ringan' ? 'Warning' : 'Bahaya'}
+                </span>
+              </div>
+              <span className="text-xs text-gray-400 block font-mono">
+                Roll: {metrics.roll.toFixed(1)}° • Pitch: {metrics.pitch.toFixed(1)}°
+              </span>
+              <span className="text-[10px] text-gray-400 block mt-1">Sumber sensor: <span className="font-semibold text-gray-500 dark:text-gray-400">MPU6050</span></span>
+            </div>
+
+            {/* Getaran Pompa Air (titik status dihapus, hanya teks) */}
+            <div className="min-w-0 sm:col-span-2 xl:col-span-1">
+              <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">Status Pompa & Getaran</span>
+              <div className="flex items-center gap-2 mt-1 mb-2">
+                <span className={`text-lg font-bold ${metrics.vibration ? 'text-yellow-500 dark:text-yellow-400' : 'text-green-600 dark:text-green-400'}`}>
+                  {metrics.vibration ? 'Warning' : 'Normal'}
+                </span>
+              </div>
+              <span className="text-xs text-gray-400 block">
+                {metrics.vibration ? 'Vibrasi mekanis terdeteksi' : 'Tidak ada getaran berlebih'}
+              </span>
+              <span className="text-[10px] text-gray-400 block mt-1">Sumber sensor: <span className="font-semibold text-gray-500 dark:text-gray-400">SW-420</span></span>
             </div>
           </div>
 
-          {/* Stabilitas Wadah MPU6050 (titik status dihapus, hanya teks) */}
-          <div className="rounded-2xl p-4 bg-gray-50 dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700/60 min-w-0">
-            <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">Stabilitas Tangki</span>
-            <div className="flex items-center gap-2 mt-1 mb-2">
-              <span className={`text-lg font-bold font-mono ${
-                metrics.stabilityStatus === 'Stabil' ? 'text-green-600 dark:text-green-400'
-                : metrics.stabilityStatus === 'Pergerakan ringan' ? 'text-yellow-500 dark:text-yellow-400'
-                : 'text-red-600 dark:text-red-400'
-              }`}>
-                {metrics.stabilityStatus === 'Stabil' ? 'Normal' : metrics.stabilityStatus === 'Pergerakan ringan' ? 'Warning' : 'Bahaya'}
-              </span>
-            </div>
-            <span className="text-xs text-gray-400 block font-mono">
-              Roll: {metrics.roll.toFixed(1)}° • Pitch: {metrics.pitch.toFixed(1)}°
-            </span>
+          {/* Footer Call-to-Action — hanya di bagian Status Fisik */}
+          <div className="pt-2 mt-3 text-xs font-semibold text-blue-600 dark:text-blue-400">
+            <Link to="/physical">Buka Detail Fisik Tandon →</Link>
           </div>
+        </section>
 
-          {/* Getaran Pompa Air (titik status dihapus, hanya teks) */}
-          <div className="rounded-2xl p-4 bg-gray-50 dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700/60 min-w-0 sm:col-span-2 xl:col-span-1">
-            <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">Status Pompa & Getaran</span>
-            <div className="flex items-center gap-2 mt-1 mb-2">
-              <span className={`text-lg font-bold ${metrics.vibration ? 'text-yellow-500 dark:text-yellow-400' : 'text-green-600 dark:text-green-400'}`}>
-                {metrics.vibration ? 'Warning' : 'Normal'}
-              </span>
-            </div>
-            <span className="text-xs text-gray-400 block">
-              {metrics.vibration ? 'Vibrasi mekanis terdeteksi' : 'Tidak ada getaran berlebih'}
-            </span>
-          </div>
-        </div>
+        {/* Garis pembatas tipis antar bagian */}
+        <div className="my-5 border-t border-gray-100 dark:border-gray-800" />
 
-        {/* Footer Call-to-Action — hanya di bagian Status Fisik */}
-        <div className="pt-3 mt-4 border-t border-gray-100 dark:border-gray-800/80 text-xs font-semibold text-blue-600 dark:text-blue-400">
-          <Link to="/physical">Buka Detail Fisik Tandon →</Link>
-        </div>
-      </div>
-
-      {/* ======================= DAFTAR PERANGKAT (TERPISAH) ======================= */}
-      <div className="rounded-3xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 sm:p-6 shadow-xs">
-        {/* Daftar Perangkat — sumber identik dengan menu Perangkat Sensor */}
-        <div className="flex items-center justify-between gap-3 mb-1">
-          <h3 className="text-base font-bold text-gray-900 dark:text-white border-l-4 border-blue-600 pl-3">
-            Daftar Perangkat
-          </h3>
-          <Link
-            to="/devices"
-            className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
-          >
-            Kelola di Perangkat Sensor →
-          </Link>
-        </div>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-          {devices.filter((d) => (d.connection || (d.is_online ? 'ONLINE' : 'OFFLINE')) === 'ONLINE').length} online dari {devices.length} perangkat • data sama dengan menu Perangkat Sensor
-        </p>
-        <div className="overflow-x-auto rounded-2xl border border-gray-100 dark:border-gray-800">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-gray-50 dark:bg-gray-800/80 text-gray-500 font-semibold border-b border-gray-100 dark:border-gray-800">
-              <tr>
-                <th className="px-4 py-3">Perangkat</th>
-                <th className="px-4 py-3">Jenis</th>
-                <th className="px-4 py-3">Lokasi</th>
-                <th className="px-4 py-3">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-              {devices.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="px-4 py-8 text-center text-gray-500">
-                    Belum ada perangkat terdaftar. Tambahkan di menu Perangkat Sensor.
-                  </td>
-                </tr>
-              ) : (
-                devices.map((dev) => {
-                  const conn = dev.connection || (dev.is_online ? 'ONLINE' : 'OFFLINE');
-                  return (
-                    <tr key={dev.id} className="hover:bg-blue-50/40 dark:hover:bg-blue-950/20 transition-colors">
-                      <td className="px-4 py-3">
-                        <div className="font-bold text-gray-900 dark:text-white font-mono">{dev.kode_node}</div>
-                        <div className="text-[11px] text-gray-400">{dev.device_name}</div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900/50">
-                          {dev.device_role === 'gateway' ? 'Gateway' : (dev.model_type || 'Node Sensor')}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-gray-600 dark:text-gray-300 font-medium">
-                        {dev.nama_lokasi && dev.nama_lokasi !== '' && dev.nama_lokasi !== '-' ? dev.nama_lokasi : (
-                          <span className="text-gray-400 italic">- (Belum Ditempatkan)</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`text-[11px] font-bold ${
-                            conn === 'ONLINE'
-                              ? 'text-green-600 dark:text-green-400'
-                              : conn === 'STALE'
-                                ? 'text-amber-600 dark:text-amber-400'
-                                : 'text-gray-400 dark:text-gray-500'
-                          }`}
-                        >
-                          {conn === 'ONLINE' ? '● Online' : conn === 'STALE' ? '◐ Stale' : '○ Offline'}
-                        </span>
-                        {typeof dev.seconds_ago === 'number' && (
-                          <span className="block text-[10px] text-gray-400">
-                            terlihat {dev.seconds_ago < 60 ? `${dev.seconds_ago} dtk` : `${Math.round(dev.seconds_ago / 60)} mnt`} lalu
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* ======================= KOTAK "FITUR" (SESUAI PROMPT FINAL REVISI 6) ======================= */}
-      <div className="rounded-3xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 sm:p-6 shadow-xs">
-        <div className="flex items-center justify-between mb-4">
-          <div>
+        {/* ======================= BAGIAN: DAFTAR PERANGKAT ======================= */}
+        <section>
+          {/* Daftar Perangkat — sumber identik dengan menu Perangkat Sensor */}
+          <div className="flex items-center justify-between gap-3 mb-1">
             <h3 className="text-base font-bold text-gray-900 dark:text-white border-l-4 border-blue-600 pl-3">
-              Fitur
+              Daftar Perangkat
             </h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 pl-3">
-              Akses cepat modul analitika TinyML, orkestrasi perangkat & OTA, serta pelaporan data
-            </p>
+            <Link
+              to="/devices"
+              className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
+            >
+              Kelola di Perangkat Sensor →
+            </Link>
           </div>
-        </div>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            {devices.filter((d) => (d.connection || (d.is_online ? 'ONLINE' : 'OFFLINE')) === 'ONLINE').length} online dari {devices.length} perangkat • data sama dengan menu Perangkat Sensor
+          </p>
+          <div className="overflow-x-auto rounded-2xl border border-gray-100 dark:border-gray-800">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-gray-50 dark:bg-gray-800/80 text-gray-500 font-semibold border-b border-gray-100 dark:border-gray-800">
+                <tr>
+                  <th className="px-4 py-3">Perangkat</th>
+                  <th className="px-4 py-3">Jenis</th>
+                  <th className="px-4 py-3">Lokasi</th>
+                  <th className="px-4 py-3">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                {devices.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-8 text-center text-gray-500">
+                      Belum ada perangkat terdaftar. Tambahkan di menu Perangkat Sensor.
+                    </td>
+                  </tr>
+                ) : (
+                  devices.map((dev) => {
+                    const conn = dev.connection || (dev.is_online ? 'ONLINE' : 'OFFLINE');
+                    return (
+                      <tr key={dev.id} className="hover:bg-blue-50/40 dark:hover:bg-blue-950/20 transition-colors">
+                        <td className="px-4 py-3">
+                          <div className="font-bold text-gray-900 dark:text-white font-mono">{dev.kode_node}</div>
+                          <div className="text-[11px] text-gray-400">{dev.device_name}</div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900/50">
+                            {dev.device_role === 'gateway' ? 'Gateway' : (dev.model_type || 'Node Sensor')}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-gray-600 dark:text-gray-300 font-medium">
+                          {dev.nama_lokasi && dev.nama_lokasi !== '' && dev.nama_lokasi !== '-' ? dev.nama_lokasi : (
+                            <span className="text-gray-400 italic">- (Belum Ditempatkan)</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`text-[11px] font-bold ${
+                              conn === 'ONLINE'
+                                ? 'text-green-600 dark:text-green-400'
+                                : conn === 'STALE'
+                                  ? 'text-amber-600 dark:text-amber-400'
+                                  : 'text-gray-400 dark:text-gray-500'
+                            }`}
+                          >
+                            {conn === 'ONLINE' ? '● Online' : conn === 'STALE' ? '◐ Stale' : '○ Offline'}
+                          </span>
+                          {typeof dev.seconds_ago === 'number' && (
+                            <span className="block text-[10px] text-gray-400">
+                              terlihat {dev.seconds_ago < 60 ? `${dev.seconds_ago} dtk` : `${Math.round(dev.seconds_ago / 60)} mnt`} lalu
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-          <Link
-            to="/ai-analytics"
-            className="p-4 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-800/60 hover:border-blue-500 hover:shadow-md transition flex items-center gap-3 group min-w-0"
-          >
-            <div className="min-w-0">
-              <strong className="text-sm font-bold text-gray-900 dark:text-white block group-hover:text-blue-600 transition-colors">
-                Analisis Edge AI
-              </strong>
-              <span className="text-xs text-gray-400">Diagnosis prediktif & model TinyML</span>
-            </div>
-          </Link>
+        {/* Garis pembatas tipis antar bagian */}
+        <div className="my-5 border-t border-gray-100 dark:border-gray-800" />
 
-          <Link
-            to="/devices"
-            className="p-4 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-800/60 hover:border-emerald-500 hover:shadow-md transition flex items-center gap-3 group min-w-0"
-          >
-            <div className="min-w-0">
-              <strong className="text-sm font-bold text-gray-900 dark:text-white block group-hover:text-emerald-600 transition-colors">
-                Perangkat & Update OTA
-              </strong>
-              <span className="text-xs text-gray-400">Tambah sensor & flash firmware wireless</span>
+        {/* ======================= BAGIAN: FITUR ======================= */}
+        <section>
+          <div className="mb-3">
+            <div>
+              <h3 className="text-base font-bold text-gray-900 dark:text-white border-l-4 border-blue-600 pl-3">
+                Fitur
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 pl-3">
+                Akses cepat modul analitika TinyML, orkestrasi perangkat & OTA, serta pelaporan data
+              </p>
             </div>
-          </Link>
+          </div>
 
-          <Link
-            to="/reports"
-            className="p-4 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-800/60 hover:border-purple-500 hover:shadow-md transition flex items-center gap-3 group min-w-0 sm:col-span-2 xl:col-span-1"
-          >
-            <div className="min-w-0">
-              <strong className="text-sm font-bold text-gray-900 dark:text-white block group-hover:text-purple-600 transition-colors">
-                Laporan & Ekspor Data
-              </strong>
-              <span className="text-xs text-gray-400">Unduh Excel, CSV, dan cetak PDF</span>
-            </div>
-          </Link>
-        </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
+            <Link
+              to="/ai-analytics"
+              className="group min-w-0 py-1"
+            >
+              <div className="min-w-0">
+                <strong className="text-sm font-bold text-gray-900 dark:text-white block group-hover:text-blue-600 transition-colors">
+                  Analisis Edge AI
+                </strong>
+                <span className="text-xs text-gray-400">Diagnosis prediktif & model TinyML</span>
+              </div>
+            </Link>
+
+            <Link
+              to="/devices"
+              className="group min-w-0 py-1"
+            >
+              <div className="min-w-0">
+                <strong className="text-sm font-bold text-gray-900 dark:text-white block group-hover:text-emerald-600 transition-colors">
+                  Perangkat & Update OTA
+                </strong>
+                <span className="text-xs text-gray-400">Tambah sensor & flash firmware wireless</span>
+              </div>
+            </Link>
+
+            <Link
+              to="/reports"
+              className="group min-w-0 py-1 sm:col-span-2 xl:col-span-1"
+            >
+              <div className="min-w-0">
+                <strong className="text-sm font-bold text-gray-900 dark:text-white block group-hover:text-purple-600 transition-colors">
+                  Laporan & Ekspor Data
+                </strong>
+                <span className="text-xs text-gray-400">Unduh Excel, CSV, dan cetak PDF</span>
+              </div>
+            </Link>
+          </div>
+        </section>
       </div>
     </div>
   );

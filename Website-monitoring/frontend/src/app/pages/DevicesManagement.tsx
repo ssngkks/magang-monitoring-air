@@ -48,6 +48,8 @@ import {
   OtaStatusItem,
 } from '../lib/api';
 import { ActionFeedbackModal, ActionFeedbackStatus } from '../components/ActionFeedbackModal';
+import { DeviceHistoryPrototype } from '../components/DeviceHistoryPrototype';
+import { SectorMap } from '../components/SectorMap';
 
 export function DevicesManagement() {
   const [activeTab, setActiveTab] = useState<'devices' | 'device-types' | 'locations' | 'firmware'>('devices');
@@ -89,6 +91,8 @@ export function DevicesManagement() {
 
   // Modal open states
   const [isAddLocationOpen, setIsAddLocationOpen] = useState(false);
+  const [isEditLocationOpen, setIsEditLocationOpen] = useState(false);
+  const [editingLocation, setEditingLocation] = useState<LocationItem | null>(null);
   const [isAddDeviceOpen, setIsAddDeviceOpen] = useState(false);
   const [isAddDeviceTypeOpen, setIsAddDeviceTypeOpen] = useState(false);
   const [isEditDeviceTypeOpen, setIsEditDeviceTypeOpen] = useState(false);
@@ -157,7 +161,8 @@ export function DevicesManagement() {
   });
 
   // Form states
-  const [locationForm, setLocationForm] = useState({ name: '', code: '', description: '', address: '' });
+  const emptyLocationForm = { name: '', code: '', description: '', address: '', latitude: '', longitude: '', radius_m: '200' };
+  const [locationForm, setLocationForm] = useState(emptyLocationForm);
   const [deviceTypeForm, setDeviceTypeForm] = useState({ name: '', description: '' });
   const [deviceForm, setDeviceForm] = useState({
     kode_node: '',
@@ -267,6 +272,8 @@ export function DevicesManagement() {
           handleCloseEditDeviceType();
         } else if (isAddLocationOpen) {
           handleCloseAddLocation();
+        } else if (isEditLocationOpen) {
+          handleCloseEditLocation();
         } else if (assignSectorModal) {
           handleCloseAssignSector();
         } else if (isAddSensorOpen) {
@@ -293,6 +300,7 @@ export function DevicesManagement() {
     isAddDeviceTypeOpen,
     isEditDeviceTypeOpen,
     isAddLocationOpen,
+    isEditLocationOpen,
     assignSectorModal,
     isAddSensorOpen,
     calibratingSensor,
@@ -434,17 +442,115 @@ export function DevicesManagement() {
   // HANDLERS: LOKASI & SEKTOR
   // ==========================================
 
+  const parseLocationForm = () => {
+    const lat = locationForm.latitude.trim() === '' ? null : Number(locationForm.latitude);
+    const lng = locationForm.longitude.trim() === '' ? null : Number(locationForm.longitude);
+    const rad = locationForm.radius_m.trim() === '' ? 200 : Number(locationForm.radius_m);
+    if ((lat !== null && (isNaN(lat) || lat < -90 || lat > 90)) || (lng !== null && (isNaN(lng) || lng < -180 || lng > 180))) {
+      throw new Error('Koordinat tidak valid. Pilih titik dari map atau isi latitude (-90…90) dan longitude (-180…180).');
+    }
+    if (isNaN(rad) || rad < 10 || rad > 10000) {
+      throw new Error('Radius area harus 10–10000 meter.');
+    }
+    return { lat, lng, rad };
+  };
+
+  // Verifikasi pasca-simpan: pastikan koordinat yang dikirim benar-benar
+  // tersimpan di database (baca ulang via GET), bukan sekadar respons 201.
+  const verifyPersistedCoords = async (
+    id: string | number | undefined,
+    fallbackCode: string,
+    sentLat: number | null,
+    sentLng: number | null,
+  ): Promise<string | null> => {
+    try {
+      const res = await api.locations();
+      const rows: LocationItem[] = res.data || [];
+      const row = rows.find((l) => String(l.id) === String(id))
+        || rows.find((l) => (l.code || '') === fallbackCode && fallbackCode !== '');
+      if (!row) return 'Data sektor tidak ditemukan saat verifikasi ulang. Periksa koneksi database.';
+      if (sentLat !== null && sentLng !== null && (row.latitude == null || row.longitude == null)) {
+        return 'Koordinat terkirim tetapi TIDAK tersimpan di database. Periksa koneksi database lalu coba lagi.';
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
   const handleSubmitLocation = async (e: React.FormEvent) => {
     e.preventDefault();
     showFeedback('loading', 'Menyimpan Sektor...', 'Sedang membuat data Sektor lokasi baru...');
     try {
-      await api.createLocation(locationForm);
+      const { lat, lng, rad } = parseLocationForm();
+      const created = await api.createLocation({
+        name: locationForm.name,
+        code: locationForm.code || undefined,
+        description: locationForm.description || undefined,
+        latitude: lat,
+        longitude: lng,
+        radius_m: rad,
+      } as any);
+      const problem = await verifyPersistedCoords(created?.data?.id, locationForm.code, lat, lng);
+      if (problem) {
+        await loadData();
+        showFeedback('error', 'Koordinat Tidak Tersimpan', problem);
+        return;
+      }
       showFeedback('success', 'Berhasil', `Sektor ${locationForm.name} berhasil ditambahkan.`);
       setIsAddLocationOpen(false);
-      setLocationForm({ name: '', code: '', description: '', address: '' });
+      setLocationForm(emptyLocationForm);
       loadData();
     } catch (err: any) {
       showFeedback('error', 'Gagal Menambah Sektor', err.message || 'Gagal menambahkan sektor.');
+    }
+  };
+
+  const handleOpenEditLocation = (loc: LocationItem) => {
+    setEditingLocation(loc);
+    setLocationForm({
+      name: loc.name || '',
+      code: loc.code || '',
+      description: loc.description || '',
+      address: (loc as any).address || '',
+      latitude: loc.latitude != null ? String(loc.latitude) : '',
+      longitude: loc.longitude != null ? String(loc.longitude) : '',
+      radius_m: loc.radius_m != null ? String(loc.radius_m) : '200',
+    });
+    setIsEditLocationOpen(true);
+  };
+
+  const handleCloseEditLocation = () => {
+    setIsEditLocationOpen(false);
+    setEditingLocation(null);
+  };
+
+  const handleSubmitEditLocation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingLocation) return;
+    showFeedback('loading', 'Menyimpan Perubahan...', `Sedang memperbarui sektor ${editingLocation.name}...`);
+    try {
+      const { lat, lng, rad } = parseLocationForm();
+      await api.updateLocation(editingLocation.id, {
+        name: locationForm.name,
+        code: locationForm.code || undefined,
+        description: locationForm.description || undefined,
+        latitude: lat,
+        longitude: lng,
+        radius_m: rad,
+      } as any);
+      const problem = await verifyPersistedCoords(editingLocation.id, locationForm.code, lat, lng);
+      if (problem) {
+        await loadData();
+        showFeedback('error', 'Koordinat Tidak Tersimpan', problem);
+        return;
+      }
+      showFeedback('success', 'Berhasil', `Sektor "${locationForm.name}" berhasil diperbarui.`);
+      handleCloseEditLocation();
+      setLocationForm(emptyLocationForm);
+      loadData();
+    } catch (err: any) {
+      showFeedback('error', 'Gagal Memperbarui Sektor', err.message || 'Gagal memperbarui sektor.');
     }
   };
 
@@ -1361,6 +1467,11 @@ export function DevicesManagement() {
                     </div>
                   )}
                 </div>
+
+                {/* Prototype: History Monitoring perangkat */}
+                {deviceSensors.length > 0 && (
+                  <DeviceHistoryPrototype device={selectedDevice} sensors={deviceSensors} />
+                )}
               </div>
             </div>
           )}
@@ -1496,6 +1607,36 @@ export function DevicesManagement() {
             </button>
           </div>
 
+          {/* Peta Sektor — marker + radius dari data backend */}
+          <div className="p-5 rounded-3xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 shadow-xs">
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <h4 className="text-sm font-bold text-gray-900 dark:text-white">
+                Peta Sektor Lokasi
+              </h4>
+              <span className="text-[11px] text-gray-400">
+                {locations.filter((l) => l.latitude != null && l.longitude != null).length} dari {locations.length} sektor memiliki koordinat
+              </span>
+            </div>
+            <SectorMap
+              locations={locations.map((loc) => ({
+                id: loc.id,
+                name: loc.name,
+                code: loc.code,
+                latitude: loc.latitude != null ? Number(loc.latitude) : null,
+                longitude: loc.longitude != null ? Number(loc.longitude) : null,
+                radius_m: loc.radius_m != null ? Number(loc.radius_m) : 200,
+                deviceNames: devices
+                  .filter((d) => String(d.location_id) === String(loc.id) || d.nama_lokasi === loc.name)
+                  .map((d) => d.device_name || d.kode_node),
+              }))}
+            />
+            {locations.length > 0 && locations.every((l) => l.latitude == null || l.longitude == null) && (
+              <p className="text-[11px] text-gray-400 mt-2">
+                Belum ada sektor yang memiliki koordinat. Tambahkan sektor baru dan pilih titiknya dari map.
+              </p>
+            )}
+          </div>
+
           {/* Tabel Sektor */}
           <div className="rounded-3xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 shadow-xs overflow-hidden">
             <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
@@ -1528,6 +1669,11 @@ export function DevicesManagement() {
                               <Building2 className="w-3.5 h-3.5 text-blue-500" />
                               {loc.name}
                             </span>
+                            <span className="block text-[10px] font-normal font-mono text-gray-400 mt-0.5">
+                              {loc.latitude != null && loc.longitude != null
+                                ? `${Number(loc.latitude).toFixed(5)}, ${Number(loc.longitude).toFixed(5)} • r ${Number(loc.radius_m) || 200} m`
+                                : 'Belum ada koordinat'}
+                            </span>
                           </td>
                           <td className="px-5 py-3.5 font-mono text-gray-500">{loc.code || '-'}</td>
                           <td className="px-5 py-3.5 text-gray-500 dark:text-gray-400">{loc.description || '-'}</td>
@@ -1551,6 +1697,14 @@ export function DevicesManagement() {
                           </td>
                           <td className="px-5 py-3.5 text-right">
                             <div className="flex items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditLocation(loc)}
+                                className="p-1.5 text-gray-400 hover:text-blue-600 rounded-lg transition cursor-pointer"
+                                title="Edit Sektor & Koordinat"
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => handleOpenAssignSector(loc)}
@@ -1918,7 +2072,7 @@ export function DevicesManagement() {
           onClick={handleCloseAddLocation}
         >
           <div
-            className="w-full max-w-md bg-white dark:bg-gray-900 rounded-3xl shadow-2xl p-6 border border-gray-200 dark:border-gray-800 relative"
+            className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-3xl shadow-2xl p-6 border border-gray-200 dark:border-gray-800 relative max-h-[90vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <button
@@ -1947,7 +2101,7 @@ export function DevicesManagement() {
                   required
                   placeholder="Contoh: Sektor 1 (Area Tandon Utama)"
                   value={locationForm.name}
-                  onChange={(e) => setLocationForm({ ...locationForm, name: e.target.value })}
+                  onChange={(e) => setLocationForm((prev) => ({ ...prev, name: e.target.value }))}
                   className="w-full rounded-xl border border-gray-300 p-2.5 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
                 />
               </div>
@@ -1957,19 +2111,78 @@ export function DevicesManagement() {
                   type="text"
                   placeholder="Contoh: SEK-01"
                   value={locationForm.code}
-                  onChange={(e) => setLocationForm({ ...locationForm, code: e.target.value })}
+                  onChange={(e) => setLocationForm((prev) => ({ ...prev, code: e.target.value }))}
                   className="w-full rounded-xl border border-gray-300 p-2.5 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
                 />
               </div>
               <div>
-                <label className="block text-gray-700 dark:text-gray-300 font-semibold mb-1">Keterangan / Radius</label>
+                <label className="block text-gray-700 dark:text-gray-300 font-semibold mb-1">Keterangan</label>
                 <textarea
                   rows={2}
-                  placeholder="Radius ±200 m, tandon air bersih gedung barat..."
+                  placeholder="Tandon air bersih gedung barat..."
                   value={locationForm.description}
-                  onChange={(e) => setLocationForm({ ...locationForm, description: e.target.value })}
+                  onChange={(e) => setLocationForm((prev) => ({ ...prev, description: e.target.value }))}
                   className="w-full rounded-xl border border-gray-300 p-2.5 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
                 />
+              </div>
+              <div>
+                <label className="block text-gray-700 dark:text-gray-300 font-semibold mb-1">Radius Area (meter)</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={10}
+                    max={10000}
+                    step={10}
+                    placeholder="200"
+                    value={locationForm.radius_m}
+                    onChange={(e) => setLocationForm((prev) => ({ ...prev, radius_m: e.target.value }))}
+                    className="w-full rounded-xl border border-gray-300 p-2.5 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                  />
+                  <span className="text-gray-400 text-xs shrink-0">meter</span>
+                </div>
+              </div>
+              <div>
+                <label className="block text-gray-700 dark:text-gray-300 font-semibold mb-1">Lokasi Sektor</label>
+                <SectorMap
+                  picker
+                  heightClass="h-56"
+                  pickLat={locationForm.latitude.trim() === '' ? null : Number(locationForm.latitude)}
+                  pickLng={locationForm.longitude.trim() === '' ? null : Number(locationForm.longitude)}
+                  pickRadius={Number(locationForm.radius_m) || 200}
+                  onPick={(lat, lng) => setLocationForm((prev) => ({ ...prev, latitude: String(lat), longitude: String(lng) }))}
+                  locations={[]}
+                />
+                {locationForm.latitude.trim() === '' || locationForm.longitude.trim() === '' ? (
+                  <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400 mt-2">
+                    Belum ada titik dipilih — klik map di atas untuk menentukan lokasi sektor.
+                  </p>
+                ) : (
+                  <p className="text-[11px] font-medium text-green-600 dark:text-green-400 mt-2">
+                    Titik terpilih: {locationForm.latitude}, {locationForm.longitude} — ikut tersimpan saat Simpan Sektor.
+                  </p>
+                )}
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <div>
+                    <label className="block text-gray-500 dark:text-gray-400 font-medium mb-1">Latitude</label>
+                    <input
+                      type="text"
+                      readOnly
+                      placeholder="-7.79558 (otomatis dari map)"
+                      value={locationForm.latitude}
+                      className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-2.5 font-mono text-gray-600 dark:text-gray-300"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-gray-500 dark:text-gray-400 font-medium mb-1">Longitude</label>
+                    <input
+                      type="text"
+                      readOnly
+                      placeholder="110.36949 (otomatis dari map)"
+                      value={locationForm.longitude}
+                      className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-2.5 font-mono text-gray-600 dark:text-gray-300"
+                    />
+                  </div>
+                </div>
               </div>
               <div className="flex justify-end gap-2 pt-2">
                 <button
@@ -1984,6 +2197,141 @@ export function DevicesManagement() {
                   className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold cursor-pointer shadow-md shadow-blue-600/20"
                 >
                   Simpan Sektor
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL: EDIT LOKASI / SEKTOR (TERMASUK KOORDINAT)         */}
+      {/* ======================================================== */}
+      {isEditLocationOpen && editingLocation && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200"
+          onClick={handleCloseEditLocation}
+        >
+          <div
+            className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-3xl shadow-2xl p-6 border border-gray-200 dark:border-gray-800 relative max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={handleCloseEditLocation}
+              className="absolute top-5 right-5 p-1.5 rounded-xl text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-gray-800 transition cursor-pointer"
+              title="Tutup Modal"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="flex items-center gap-2 mb-2 text-blue-600 dark:text-blue-400">
+              <Building2 className="w-5 h-5" />
+              <h3 className="text-base font-bold text-gray-900 dark:text-white">
+                Edit Sektor {editingLocation.name}
+              </h3>
+            </div>
+            <p className="text-xs text-gray-500 mb-4 leading-relaxed">
+              Perbarui data sektor. Klik map untuk memindahkan titik koordinat, lalu simpan.
+            </p>
+
+            <form onSubmit={handleSubmitEditLocation} className="space-y-4 text-xs">
+              <div>
+                <label className="block text-gray-700 dark:text-gray-300 font-semibold mb-1">Nama Sektor *</label>
+                <input
+                  type="text"
+                  required
+                  value={locationForm.name}
+                  onChange={(e) => setLocationForm((prev) => ({ ...prev, name: e.target.value }))}
+                  className="w-full rounded-xl border border-gray-300 p-2.5 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-gray-700 dark:text-gray-300 font-semibold mb-1">Kode Sektor</label>
+                <input
+                  type="text"
+                  value={locationForm.code}
+                  onChange={(e) => setLocationForm((prev) => ({ ...prev, code: e.target.value }))}
+                  className="w-full rounded-xl border border-gray-300 p-2.5 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-gray-700 dark:text-gray-300 font-semibold mb-1">Keterangan</label>
+                <textarea
+                  rows={2}
+                  value={locationForm.description}
+                  onChange={(e) => setLocationForm((prev) => ({ ...prev, description: e.target.value }))}
+                  className="w-full rounded-xl border border-gray-300 p-2.5 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-gray-700 dark:text-gray-300 font-semibold mb-1">Radius Area (meter)</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={10}
+                    max={10000}
+                    step={10}
+                    value={locationForm.radius_m}
+                    onChange={(e) => setLocationForm((prev) => ({ ...prev, radius_m: e.target.value }))}
+                    className="w-full rounded-xl border border-gray-300 p-2.5 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                  />
+                  <span className="text-gray-400 text-xs shrink-0">meter</span>
+                </div>
+              </div>
+              <div>
+                <label className="block text-gray-700 dark:text-gray-300 font-semibold mb-1">Lokasi Sektor</label>
+                <SectorMap
+                  picker
+                  heightClass="h-56"
+                  pickLat={locationForm.latitude.trim() === '' ? null : Number(locationForm.latitude)}
+                  pickLng={locationForm.longitude.trim() === '' ? null : Number(locationForm.longitude)}
+                  pickRadius={Number(locationForm.radius_m) || 200}
+                  onPick={(lat, lng) => setLocationForm((prev) => ({ ...prev, latitude: String(lat), longitude: String(lng) }))}
+                  locations={[]}
+                />
+                {locationForm.latitude.trim() === '' || locationForm.longitude.trim() === '' ? (
+                  <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400 mt-2">
+                    Sektor ini belum memiliki koordinat — klik map di atas untuk menentukan titiknya.
+                  </p>
+                ) : (
+                  <p className="text-[11px] font-medium text-green-600 dark:text-green-400 mt-2">
+                    Titik tersimpan: {locationForm.latitude}, {locationForm.longitude} — klik map untuk memindahkan.
+                  </p>
+                )}
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <div>
+                    <label className="block text-gray-500 dark:text-gray-400 font-medium mb-1">Latitude</label>
+                    <input
+                      type="text"
+                      readOnly
+                      value={locationForm.latitude}
+                      className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-2.5 font-mono text-gray-600 dark:text-gray-300"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-gray-500 dark:text-gray-400 font-medium mb-1">Longitude</label>
+                    <input
+                      type="text"
+                      readOnly
+                      value={locationForm.longitude}
+                      className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-2.5 font-mono text-gray-600 dark:text-gray-300"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={handleCloseEditLocation}
+                  className="px-4 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 cursor-pointer font-medium"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold cursor-pointer shadow-md shadow-blue-600/20"
+                >
+                  Simpan Perubahan
                 </button>
               </div>
             </form>

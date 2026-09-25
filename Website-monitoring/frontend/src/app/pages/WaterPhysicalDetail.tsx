@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link } from 'react-router';
 import {
   ArrowLeft,
@@ -15,10 +15,49 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  ReferenceLine,
+  Legend,
 } from 'recharts';
 
 type TimeRange = 'today' | '7d' | '30d' | 'custom';
+
+// Kapasitas maksimum tandon — sama dengan yang sudah ditampilkan halaman ini
+// ("cm / 100 cm") dan config_schema tank_height_cm pada SensorTypeSeeder.
+const TANK_CAPACITY_CM = 100;
+
+interface TankWaterStatus {
+  text: 'Normal' | 'Warning' | 'Bahaya';
+  textClass: string;
+  fill: string;
+  surface: string;
+}
+
+// Status visual level air memakai ambang yang sudah dipakai project:
+// peringatan Min 20 cm / Max 85 cm (garis acuan grafik lama) dan
+// kritis < 10 cm / > 92 cm (SensorReconcileService water_level).
+function getTankWaterStatus(level: number): TankWaterStatus {
+  if (level < 10 || level > 92) {
+    return {
+      text: 'Bahaya',
+      textClass: 'text-red-600 dark:text-red-400',
+      fill: '#ef4444',
+      surface: '#f87171',
+    };
+  }
+  if (level < 20 || level > 85) {
+    return {
+      text: 'Warning',
+      textClass: 'text-yellow-500 dark:text-yellow-400',
+      fill: '#f59e0b',
+      surface: '#fbbf24',
+    };
+  }
+  return {
+    text: 'Normal',
+    textClass: 'text-green-600 dark:text-green-400',
+    fill: '#3b82f6',
+    surface: '#60a5fa',
+  };
+}
 
 function formatWaktu(iso: string | null | undefined): string {
   if (!iso) return '-';
@@ -102,9 +141,14 @@ export function WaterPhysicalDetail() {
                 : `${dateObj.toLocaleDateString('id-ID', { day: 'numeric', month: 'numeric' })} ${dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`,
               fullDate: dateObj.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
               waterLevel: Number(r.water_level ?? 0),
+              vibration: r.vibration ? 1 : 0,
+              roll: r.roll !== null && r.roll !== undefined ? Number(r.roll) : null,
+              pitch: r.pitch !== null && r.pitch !== undefined ? Number(r.pitch) : null,
             };
           });
         setChartData(formatted);
+      } else {
+        setChartData([]);
       }
     } catch (err) {
       console.error('Gagal mengambil data fisik tandon:', err);
@@ -159,8 +203,15 @@ export function WaterPhysicalDetail() {
         ? 'text-yellow-500 dark:text-yellow-400'
         : 'text-red-600 dark:text-red-400';
 
+  // Seri grafik getaran: 60 titik terakhir dari riwayat yang sama (tanpa fetch baru).
+  const vibrationSeries = useMemo(() => chartData.slice(-60), [chartData]);
+
+  // Visualisasi tandon mengikuti nilai aktual + kapasitas yang sudah dipakai halaman ini.
+  const tankPercent = Math.min(Math.max((metrics.waterLevel / TANK_CAPACITY_CM) * 100, 0), 100);
+  const tankStatus = getTankWaterStatus(metrics.waterLevel);
+
   return (
-    <div className="p-4 sm:p-6 lg:p-8 space-y-6 w-full max-w-[1600px] mx-auto overflow-x-hidden">
+    <div className="p-4 sm:p-6 lg:p-8 space-y-6 w-full max-w-none mx-0 overflow-x-hidden min-w-0">
       {/* Top Bar with Back to Dashboard */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="min-w-0">
@@ -289,46 +340,124 @@ export function WaterPhysicalDetail() {
         </div>
       </div>
 
-      {/* Grafik Ketinggian Air */}
-      <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 sm:p-6 shadow-xs">
-        <h3 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-3">
-          Tren Ketinggian Air ({timeRange === 'today' ? 'Hari Ini' : 'Periode Terpilih'})
+      {/* Visualisasi Kondisi Fisik Tandon: tandon (kiri) + grafik getaran (kanan) */}
+      <section className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 sm:p-6 shadow-xs">
+        <h3 className="text-base font-bold text-gray-900 dark:text-white border-l-4 border-blue-600 pl-3">
+          Kondisi Fisik Tandon
         </h3>
-        <div className="h-56 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
-              <defs>
-                <linearGradient id="wlGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.4} />
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
-              <XAxis dataKey="time" tick={{ fontSize: 10 }} />
-              <YAxis tick={{ fontSize: 10 }} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: '#1f2937',
-                  color: '#fff',
-                  borderRadius: 8,
-                  fontSize: 12,
-                  border: 'none',
-                }}
-              />
-              <ReferenceLine y={20} stroke="#ef4444" strokeDasharray="3 3" label={{ value: 'Min 20 cm', fill: '#ef4444', fontSize: 10 }} />
-              <ReferenceLine y={85} stroke="#f59e0b" strokeDasharray="3 3" label={{ value: 'Max 85 cm', fill: '#f59e0b', fontSize: 10 }} />
-              <Area
-                type="monotone"
-                dataKey="waterLevel"
-                stroke="#3b82f6"
-                fillOpacity={1}
-                fill="url(#wlGrad)"
-                strokeWidth={2}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 mb-4">
+          Visualisasi level air dan grafik getaran mengikuti data aktual
+        </p>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-0 lg:divide-x lg:divide-gray-100 dark:lg:divide-gray-800">
+          {/* Kolom kiri: visualisasi fisik tandon */}
+          <div className="min-w-0 flex flex-col items-center lg:pr-6">
+            {/* Ilustrasi tandon — tinggi air = nilai aktual */}
+            <div className="w-44 sm:w-52">
+              {/* Tutup tandon */}
+              <div className="mx-3 h-3 rounded-t-lg bg-gray-300 dark:bg-gray-600" />
+              <div className="mx-6 h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 mb-1" />
+              {/* Badan tandon */}
+              <div className="relative h-56 sm:h-64 overflow-hidden rounded-b-2xl rounded-t-md border-2 border-t-0 border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800">
+                {/* Isi air */}
+                <div
+                  className="absolute inset-x-0 bottom-0 transition-all duration-700"
+                  style={{ height: `${tankPercent}%`, backgroundColor: tankStatus.fill }}
+                >
+                  <div
+                    className="absolute -top-1.5 inset-x-0 h-3 rounded-[50%] opacity-80"
+                    style={{ backgroundColor: tankStatus.surface }}
+                  />
+                </div>
+                {/* Garis skala kuartil */}
+                {[25, 50, 75].map((t) => (
+                  <div
+                    key={t}
+                    className="absolute inset-x-0 h-px bg-gray-900/10 dark:bg-white/15"
+                    style={{ bottom: `${t}%` }}
+                  />
+                ))}
+                {/* Lencana persentase */}
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="rounded-full bg-white/85 dark:bg-gray-900/85 px-2.5 py-0.5 text-sm font-black font-mono text-gray-900 dark:text-white shadow-xs">
+                    {tankPercent.toFixed(1)}%
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Info minimal tepat di bawah tandon */}
+            <div className="mt-3 text-center">
+              <div className="flex items-baseline justify-center gap-1.5">
+                <span className="text-3xl font-black text-gray-900 dark:text-white font-mono tracking-tight">
+                  {metrics.waterLevel.toFixed(1)}
+                </span>
+                <span className="text-xs text-gray-400 font-semibold">cm</span>
+              </div>
+              <div className="mt-1 text-xs">
+                <span className="font-bold font-mono text-gray-500 dark:text-gray-400">{tankPercent.toFixed(1)}%</span>
+                <span className="text-gray-300 dark:text-gray-600 mx-1.5">•</span>
+                <span className={`font-bold ${tankStatus.textClass}`}>{tankStatus.text}</span>
+              </div>
+              <span className="text-[10px] text-gray-400 block mt-1">Sumber sensor: <span className="font-semibold text-gray-500 dark:text-gray-400">Ultrasonic Level Air Tandon</span></span>
+            </div>
+          </div>
+
+          {/* Kolom kanan: grafik getaran */}
+          <div className="min-w-0 w-full lg:pl-6 flex flex-col">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">Grafik Getaran</span>
+              <span className={`text-[11px] font-bold ${metrics.vibration ? 'text-yellow-500 dark:text-yellow-400' : 'text-green-600 dark:text-green-400'}`}>
+                {metrics.vibration ? 'Warning' : 'Normal'}
+              </span>
+            </div>
+            <div className="relative h-64 sm:h-72 w-full min-w-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={vibrationSeries} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
+                  <XAxis dataKey="time" tick={{ fontSize: 10 }} interval="preserveStartEnd" minTickGap={24} />
+                  <YAxis tick={{ fontSize: 10 }} domain={[0, 1]} ticks={[0, 1]} allowDecimals={false} />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#1f2937',
+                      color: '#fff',
+                      borderRadius: 8,
+                      fontSize: 12,
+                      border: 'none',
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Area
+                    type="stepAfter"
+                    dataKey="vibration"
+                    name="Getaran (0/1)"
+                    stroke="#f59e0b"
+                    strokeWidth={2}
+                    fill="#f59e0b"
+                    fillOpacity={0.25}
+                    dot={false}
+                    isAnimationActive={false}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+              {vibrationSeries.length === 0 && (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center text-xs text-gray-500 dark:text-gray-400">
+                  {hasLoaded ? 'Belum ada data getaran pada rentang ini.' : 'Memuat data...'}
+                </div>
+              )}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+              <span className="text-gray-500 dark:text-gray-400">
+                Kondisi terkini: <strong className={metrics.vibration ? 'text-yellow-500 dark:text-yellow-400' : 'text-green-600 dark:text-green-400'}>{metrics.vibration ? 'Vibrasi mekanis terdeteksi' : 'Tidak ada getaran berlebih'}</strong>
+              </span>
+              <span className="text-gray-400 font-mono">
+                Roll: {metrics.roll.toFixed(1)}° • Pitch: {metrics.pitch.toFixed(1)}°
+              </span>
+            </div>
+            <span className="text-[10px] text-gray-400 block mt-1">Sumber sensor: <span className="font-semibold text-gray-500 dark:text-gray-400">SW-420</span> • Orientasi: <span className="font-semibold text-gray-500 dark:text-gray-400">MPU6050</span></span>
+          </div>
         </div>
-      </div>
+      </section>
 
       {/* Tabel data — 100 terbaru mengikuti rentang aktif */}
       <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 sm:p-6 shadow-xs">

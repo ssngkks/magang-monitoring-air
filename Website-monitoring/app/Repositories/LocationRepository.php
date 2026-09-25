@@ -4,6 +4,7 @@ namespace App\Repositories;
 
 use App\Models\Location;
 use Google\Cloud\Firestore\FieldValue;
+use Illuminate\Support\Facades\Log;
 
 /**
  * @deprecated Jalur Firestore di bawah ini LEGACY (audit.md §11) — bukan runtime aktif.
@@ -81,12 +82,11 @@ class LocationRepository
 
     public function create(array $data): array
     {
-        $created = null;
-        try {
-            $model = Location::create($data);
-            $created = $model->toArray();
-        } catch (\Throwable $e) {
-        }
+        // MySQL adalah source of truth: kegagalan simpan HARUS terlihat
+        // (koordinat sektor pernah "berhasil" tersimpan padahal NULL karena
+        // exception di sini ditelan dan API tetap menjawab 201).
+        $model = Location::create($data);
+        $created = $model->toArray();
 
         if ($this->firestoreRepo) {
             try {
@@ -98,10 +98,13 @@ class LocationRepository
                     $created = $fsData;
                 }
             } catch (\Throwable $e) {
+                Log::warning('Location Firestore mirror gagal (diabaikan, MySQL tetap utama).', [
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
 
-        return $created ?? array_merge(['id' => uniqid('loc_')], $data);
+        return $created;
     }
 
     public function update(string|int $id, array $data): bool
@@ -114,6 +117,8 @@ class LocationRepository
                 $updated = true;
             }
         } catch (\Throwable $e) {
+            Log::error('Location update ke MySQL gagal.', ['id' => $id, 'error' => $e->getMessage()]);
+            throw $e;
         }
 
         if ($this->firestoreRepo && is_string($id) && ! is_numeric($id)) {

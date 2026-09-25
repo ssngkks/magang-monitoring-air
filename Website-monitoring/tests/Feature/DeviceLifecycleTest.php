@@ -2,11 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Models\Alert;
 use App\Models\Firmware;
 use App\Models\Location;
 use App\Models\Node;
 use App\Models\OtaUpdate;
 use App\Models\Sensor;
+use App\Models\SensorData;
 use App\Models\SensorType;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -376,5 +378,86 @@ class DeviceLifecycleTest extends TestCase
 
         $this->assertEquals('success', OtaUpdate::find($otaA['id'])->status);
         $this->assertEquals('pending', OtaUpdate::find($otaB['id'])->status);
+    }
+
+    public function test_hello_rejects_garbage_device_id(): void
+    {
+        // ID sampah ("0", terlalu pendek, karakter aneh) DITOLAK di pintu.
+        foreach (['0', 'AB', 'node... PATTERN', 'a b'] as $badId) {
+            $this->postJson('/api/devices/hello', [
+                'device_id' => $badId, 'device_key' => $this->deviceKey,
+            ])->assertStatus(422);
+        }
+        $this->assertDatabaseCount('nodes', 0);
+
+        // ID legit tetap lolos.
+        $this->postJson('/api/devices/hello', [
+            'device_id' => 'ESP32-NODE-99', 'device_key' => $this->deviceKey,
+        ])->assertStatus(202);
+    }
+
+    public function test_sensor_data_cursor_walks_pages(): void
+    {
+        $this->actingAsUser();
+        $node = Node::factory()->create();
+        SensorData::factory()->count(5)->for($node)->create();
+
+        $seen = [];
+        $cursor = null;
+        for ($i = 0; $i < 5; $i++) {
+            $params = ['per_page' => 2];
+            if ($cursor) {
+                $params['cursor'] = $cursor;
+            }
+            $res = $this->getJson("/api/nodes/{$node->id}/sensor-data?".http_build_query($params))->assertOk();
+            foreach ($res->json('data') as $row) {
+                $seen[] = $row['id'];
+            }
+            if (! $res->json('meta.has_more')) {
+                break;
+            }
+            $cursor = $res->json('meta.next_cursor');
+        }
+
+        $this->assertCount(5, array_unique($seen));
+    }
+
+    public function test_sensor_data_downsample_spans_range(): void
+    {
+        $this->actingAsUser();
+        $node = Node::factory()->create();
+        // Timestamp eksplisit per baris: batch factory sedetik sama membuat
+        // urutan desc seri/nondeterministik.
+        foreach (range(0, 24) as $i) {
+            \App\Models\SensorData::factory()->for($node)->create([
+                'created_at' => now()->subMinutes(25 - $i),
+            ]);
+        }
+
+        $res = $this->getJson("/api/nodes/{$node->id}/sensor-data?downsample=10")->assertOk();
+        $rows = $res->json('data');
+        $this->assertCount(10, $rows);
+        $res->assertJsonPath('meta.downsampled', true);
+        $this->assertEquals(25, $res->json('meta.total_in_range'));
+        // Merata: titik pertama = terbaru, titik terakhir menjangkau lama.
+        $ids = array_column($rows, 'id');
+        $this->assertEquals(max($ids), $ids[0]);
+        $this->assertLessThan(max($ids), min($ids));
+
+        // Validasi batas: di bawah minimum ditolak.
+        $this->getJson("/api/nodes/{$node->id}/sensor-data?downsample=5")->assertStatus(422);
+    }
+
+    public function test_mark_all_alerts_read_bulk(): void
+    {
+        $this->actingAsUser();
+        $node = Node::factory()->create();
+        Alert::factory()->count(3)->for($node)->create(['is_read' => false]);
+
+        $this->patchJson('/api/alerts/read-all')->assertOk()->assertJsonPath('count', 3);
+        $this->assertEquals(0, Alert::where('is_read', false)->count());
+
+        // Idempotent: tidak ada unread → count 0.
+        $this->patchJson('/api/alerts/read-all')->assertOk()->assertJsonPath('count', 0);
     }
 }

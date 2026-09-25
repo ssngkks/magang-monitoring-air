@@ -326,8 +326,9 @@ export interface LocationItem {
   code?: string;
   description?: string;
   address?: string;
-  latitude?: number;
-  longitude?: number;
+  latitude?: number | null;
+  longitude?: number | null;
+  radius_m?: number | null;
   created_at?: string;
 }
 

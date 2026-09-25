@@ -46,6 +46,9 @@ class DeviceManagementController extends Controller
             'code' => ['nullable', 'string', 'max:50'],
             'description' => ['nullable', 'string'],
             'address' => ['nullable', 'string'],
+            'latitude' => ['nullable', 'numeric', 'between:-90,90'],
+            'longitude' => ['nullable', 'numeric', 'between:-180,180'],
+            'radius_m' => ['nullable', 'integer', 'min:10', 'max:10000'],
         ]);
 
         $validated['user_id'] = $userId;
@@ -64,11 +67,23 @@ class DeviceManagementController extends Controller
             'code' => ['nullable', 'string', 'max:50'],
             'description' => ['nullable', 'string'],
             'address' => ['nullable', 'string'],
+            'latitude' => ['nullable', 'numeric', 'between:-90,90'],
+            'longitude' => ['nullable', 'numeric', 'between:-180,180'],
+            'radius_m' => ['nullable', 'integer', 'min:10', 'max:10000'],
         ]);
+
+        $existing = $this->locationRepo->find($id);
+        if (! $existing) {
+            return response()->json(['message' => 'Lokasi / Sektor tidak ditemukan.'], 404);
+        }
 
         $this->locationRepo->update($id, $validated);
 
-        return response()->json(['message' => 'Lokasi / Sektor berhasil diperbarui.']);
+        // Kembalikan baris fresh agar frontend bisa verifikasi koordinat tersimpan.
+        return response()->json([
+            'message' => 'Lokasi / Sektor berhasil diperbarui.',
+            'data' => $this->locationRepo->find($id),
+        ]);
     }
 
     public function deleteLocation($id)

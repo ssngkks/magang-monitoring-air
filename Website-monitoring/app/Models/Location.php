@@ -17,6 +17,7 @@ class Location extends Model
         'address',
         'latitude',
         'longitude',
+        'radius_m',
     ];
 
     public function user()
