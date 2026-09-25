@@ -122,6 +122,9 @@ export function DevicesManagement() {
   const [uploadFirmwareTargetDevices, setUploadFirmwareTargetDevices] = useState<string[]>([]);
   const [uploadSearchQuery, setUploadSearchQuery] = useState<string>('');
   const [isUploadingFirmware, setIsUploadingFirmware] = useState(false);
+  // Pilihan perangkat saat unggah terakhir — dibawa ke modal upgrade agar tak pilih ulang
+  const [lastUploadSelection, setLastUploadSelection] = useState<{ firmwareId: string | number; deviceIds: string[] } | null>(null);
+  const [upgradeFromUpload, setUpgradeFromUpload] = useState(false);
 
   // Perangkat Baru Ditemukan — antrean pending dari hello (§5.5)
   const [pendingDevices, setPendingDevices] = useState<PendingDevice[]>([]);
@@ -249,6 +252,7 @@ export function DevicesManagement() {
   const handleCloseUpgradeModal = () => {
     setIsUpgradeModalOpen(false);
     setTargetFirmwareForUpgrade(null);
+    setUpgradeFromUpload(false);
   };
 
   // Global ESC Key Listener (Tugas 3b)
@@ -546,20 +550,6 @@ export function DevicesManagement() {
     }
   };
 
-  const handleUpdateDeviceType = async (deviceId: string | number, newType: string) => {
-    showFeedback('loading', 'Memperbarui Jenis Perangkat...', 'Sedang menyimpan perubahan...');
-    try {
-      await api.updateDevice(deviceId, { model_type: newType });
-      showFeedback('success', 'Berhasil', `Jenis perangkat berhasil diperbarui menjadi "${newType}".`);
-      loadData();
-      if (selectedDevice && selectedDevice.id === deviceId) {
-        setSelectedDevice({ ...selectedDevice, model_type: newType });
-      }
-    } catch (err: any) {
-      showFeedback('error', 'Gagal Memperbarui', err.message || 'Gagal mengubah jenis perangkat.');
-    }
-  };
-
   // ==========================================
   // HANDLERS: PERANGKAT BARU DITEMUKAN (§5.5)
   // ==========================================
@@ -808,6 +798,9 @@ export function DevicesManagement() {
       }
 
       showFeedback('success', 'Berhasil', `Firmware ${firmwareForm.version} berhasil diunggah dan dijadwalkan ke ${uploadFirmwareTargetDevices.length} perangkat.`);
+      if (newFw?.id) {
+        setLastUploadSelection({ firmwareId: newFw.id, deviceIds: [...uploadFirmwareTargetDevices] });
+      }
       setIsUploadFirmwareOpen(false);
       setUploadFirmwareTargetDevices([]);
       loadData();
@@ -821,16 +814,26 @@ export function DevicesManagement() {
 
   const handleOpenUpgradeFromRepo = (fw: FirmwareItem) => {
     setTargetFirmwareForUpgrade(fw);
-    // Otomatis pilih perangkat yang tipe jenisnya cocok
-    const targetModel = (fw.target_device_model || '').toLowerCase();
-    const matchingDevIds = devices
-      .filter((d) => {
-        if (!targetModel || targetModel === 'esp32' || targetModel === 'all') return true;
-        return (d.model_type || '').toLowerCase() === targetModel;
-      })
-      .map((d) => String(d.id));
-
-    setUpgradeSelectedDeviceIds(matchingDevIds.length > 0 ? matchingDevIds : devices.map((d) => String(d.id)));
+    // Bila firmware ini baru saja diunggah, pakai pilihan perangkat saat unggah
+    // (tidak perlu pilih ulang). Selain itu isi-otomatis berdasarkan kecocokan model.
+    const carried = lastUploadSelection
+      && String(lastUploadSelection.firmwareId) === String(fw.id)
+      ? lastUploadSelection.deviceIds.filter((sid) => devices.some((d) => String(d.id) === sid))
+      : [];
+    if (carried.length > 0) {
+      setUpgradeSelectedDeviceIds(carried);
+      setUpgradeFromUpload(true);
+    } else {
+      const targetModel = (fw.target_device_model || '').toLowerCase();
+      const matchingDevIds = devices
+        .filter((d) => {
+          if (!targetModel || targetModel === 'esp32' || targetModel === 'all') return true;
+          return (d.model_type || '').toLowerCase() === targetModel;
+        })
+        .map((d) => String(d.id));
+      setUpgradeSelectedDeviceIds(matchingDevIds.length > 0 ? matchingDevIds : devices.map((d) => String(d.id)));
+      setUpgradeFromUpload(false);
+    }
     setUpgradeSearchQuery('');
     setIsUpgradeModalOpen(true);
   };
@@ -863,6 +866,7 @@ export function DevicesManagement() {
       setIsUpgradeModalOpen(false);
       setTargetFirmwareForUpgrade(null);
       setUpgradeSelectedDeviceIds([]);
+      setUpgradeFromUpload(false);
       loadData();
     } catch (err: any) {
       // Blokir label-sama: tawarkan paksa flash ulang (kasus curiga flash corrupt).
@@ -962,7 +966,7 @@ export function DevicesManagement() {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={loadData}
+            onClick={() => loadData()}
             disabled={loading}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 transition-colors cursor-pointer"
             title="Muat ulang seluruh data dari server"
@@ -1063,7 +1067,7 @@ export function DevicesManagement() {
               onClick={() => handleOpenAddDeviceForType()}
               className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs cursor-pointer transition-all shrink-0"
             >
-              <Plus className="w-4 h-4" /> + Tambah Perangkat
+              <Plus className="w-4 h-4" /> Tambah Perangkat
             </button>
           </div>
 
@@ -1138,12 +1142,6 @@ export function DevicesManagement() {
                     Lokasi berasal dari penempatan Sektor di Tab Lokasi. Jenis dapat disetel bebas.
                   </p>
                 </div>
-                <button
-                  onClick={loadData}
-                  className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-                </button>
               </div>
 
               {/* Kotak tinggi tetap yang scroll di dalamnya (fixed-height scroll) */}
@@ -1163,7 +1161,7 @@ export function DevicesManagement() {
                     {devices.length === 0 ? (
                       <tr>
                         <td colSpan={6} className="px-4 py-12 text-center text-gray-500">
-                          Belum ada perangkat terdaftar. Klik "+ Tambah Perangkat (ESP32)".
+                          Belum ada perangkat terdaftar. Klik "Tambah Perangkat (ESP32)".
                         </td>
                       </tr>
                     ) : (
@@ -1307,20 +1305,6 @@ export function DevicesManagement() {
                       </div>
                     </div>
 
-                    {/* Dropdown Ganti Jenis Perangkat */}
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="text-gray-500 font-semibold whitespace-nowrap">Jenis Perangkat:</span>
-                      <select
-                        value={selectedDevice.model_type || ''}
-                        onChange={(e) => handleUpdateDeviceType(selectedDevice.id, e.target.value)}
-                        className="rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 p-2 text-xs font-medium text-gray-800 dark:text-gray-200 cursor-pointer"
-                      >
-                        <option value="">-- Pilih Jenis --</option>
-                        {deviceTypes.map((dt) => (
-                          <option key={dt.id} value={dt.name}>{dt.name}</option>
-                        ))}
-                      </select>
-                    </div>
                   </div>
 
                 {/* Sensor List in this Device */}
@@ -1406,7 +1390,7 @@ export function DevicesManagement() {
               onClick={() => setIsAddDeviceTypeOpen(true)}
               className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs cursor-pointer transition-all shrink-0"
             >
-              <Plus className="w-4 h-4" /> + Tambah Jenis Perangkat
+              <Plus className="w-4 h-4" /> Tambah Jenis Perangkat
             </button>
           </div>
 
@@ -1426,7 +1410,7 @@ export function DevicesManagement() {
                   {deviceTypes.length === 0 ? (
                     <tr>
                       <td colSpan={4} className="px-5 py-12 text-center text-gray-500">
-                        Belum ada jenis perangkat yang dibuat. Klik "+ Tambah Jenis Perangkat" untuk mulai menambahkan.
+                        Belum ada jenis perangkat yang dibuat. Klik "Tambah Jenis Perangkat" untuk mulai menambahkan.
                       </td>
                     </tr>
                   ) : (
@@ -1456,7 +1440,7 @@ export function DevicesManagement() {
                                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950 dark:text-blue-300 transition cursor-pointer"
                                 title={`Tambah perangkat baru dengan jenis ${dt.name}`}
                               >
-                                <Plus className="w-3.5 h-3.5" /> + Perangkat
+                                <Plus className="w-3.5 h-3.5" /> Perangkat
                               </button>
                               <button
                                 type="button"
@@ -1508,7 +1492,7 @@ export function DevicesManagement() {
               onClick={() => setIsAddLocationOpen(true)}
               className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs cursor-pointer transition-all shrink-0"
             >
-              <Plus className="w-4 h-4" /> + Tambah Sektor Baru
+              <Plus className="w-4 h-4" /> Tambah Sektor Baru
             </button>
           </div>
 
@@ -1529,7 +1513,7 @@ export function DevicesManagement() {
                   {locations.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="px-5 py-12 text-center text-gray-500">
-                        Belum ada Sektor lokasi terdaftar. Klik "+ Tambah Sektor Baru".
+                        Belum ada Sektor lokasi terdaftar. Klik "Tambah Sektor Baru".
                       </td>
                     </tr>
                   ) : (
@@ -3003,6 +2987,11 @@ export function DevicesManagement() {
                 <label className="text-gray-700 dark:text-gray-300 font-semibold text-xs">
                   Centang Perangkat Tujuan (WAJIB ≥ 1):
                 </label>
+                {upgradeFromUpload && (
+                  <p className="text-[11px] text-indigo-600 dark:text-indigo-400 mt-1">
+                    Dipilih otomatis dari unggahan terakhir — ubah bila perlu.
+                  </p>
+                )}
                 <button
                   type="button"
                   onClick={() => {

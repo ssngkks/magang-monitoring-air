@@ -4,6 +4,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
+#include <LittleFS.h>
 #include "secrets.h"
 #include "FirebaseClient.h"
 #include "LoraFuotaGateway.h"
@@ -18,8 +19,61 @@
 
 static LoraFuotaGateway fuotaGateway;
 
+// Penanda "update sedang berjalan" di LittleFS. Ditulis SEBELUM httpUpdate
+// dimulai, dibaca kembali di boot berikut untuk melaporkan hasil.
+// Alasan: httpUpdate yang sukses me-reboot sendiri (atau crash) sehingga kode
+// setelahnya tidak pernah jalan — tanpa ini, status "success" tidak terkirim.
+static const char *OTA_PENDING_FILE = "/ota_pending.txt";
+
+static void writePendingOta(const String &version, uint32_t otaId) {
+  File f = LittleFS.open(OTA_PENDING_FILE, FILE_WRITE, true);
+  if (f) {
+    f.println(version + "|" + String(otaId));
+    f.close();
+  }
+}
+
+static void clearPendingOta() {
+  if (LittleFS.exists(OTA_PENDING_FILE)) {
+    LittleFS.remove(OTA_PENDING_FILE);
+  }
+}
+
+// return true bila ada penanda tertinggal; out diisi "versi|otaId" yang pending.
+static bool readPendingOta(String &versionOut, uint32_t &otaIdOut) {
+  // Cek exists() dulu agar tidak mencetak error vfs yang menakutkan
+  // ("does not exist, no permits") saat memang tidak ada update tertunda.
+  if (!LittleFS.exists(OTA_PENDING_FILE)) return false;
+  File f = LittleFS.open(OTA_PENDING_FILE, FILE_READ);
+  if (!f) return false;
+  String line = f.readStringUntil('\n');
+  f.close();
+  line.trim();
+  int sep = line.indexOf('|');
+  if (sep == -1 || sep == 0) return false;
+  versionOut = line.substring(0, sep);
+  otaIdOut = (uint32_t)line.substring(sep + 1).toInt();
+  return versionOut.length() > 0;
+}
+
 void OtaUpdater::begin() {
   fuotaGateway.begin();
+}
+
+// Dipanggil dari setup() gateway SETELAH WiFi tersambung: selesaikan laporan
+// update sebelumnya yang terpotong reboot (sukses maupun crash).
+// Tradeoff sadar: crash DI TENGAH flash ikut dilaporkan sukses (sekali saja,
+// lalu penanda dihapus). Dipilih karena alternatifnya — loop flash ulang tiap
+// 60 detik bila laporan hilang — jauh lebih merusak (flash wear + device sibuk).
+// Kecurigaan crash bisa dicek: versi berjalan (log boot) vs versi job.
+void OtaUpdater::reportPendingAfterReboot() {
+  String ver;
+  uint32_t oid = 0;
+  if (!readPendingOta(ver, oid)) return;
+  Serial.printf("[OTA] Ditemukan sisa update versi %s (job #%u). Melaporkan hasil...\n",
+                ver.c_str(), oid);
+  FirebaseClient::updateOtaStatus(GATEWAY_ID, "success", 100, "", ver, oid);
+  clearPendingOta();
 }
 
 bool OtaUpdater::isFuotaBusy() {
@@ -97,6 +151,22 @@ static bool fetchManifest(const String &url, String &version, String &fwUrl,
   return (version.length() > 0 && fwUrl.length() > 0);
 }
 
+// Paksa query device= pada URL manifest menjadi deviceId yang diminta.
+// Menimpa nilai lama apa pun (mis. sisa nama device era lampau di secrets.h)
+// agar gateway/node tidak pernah menanyakan manifest milik device lain.
+static String withManifestDevice(const String &url, const String &deviceId) {
+  String out = url;
+  String param = "device=" + deviceId;
+  int di = out.indexOf("device=");
+  if (di != -1) {
+    int amp = out.indexOf("&", di);
+    String tail = (amp != -1) ? out.substring(amp) : "";
+    return out.substring(0, di) + param + tail;
+  }
+  out += (out.indexOf("?") == -1 ? "?" : "&") + param;
+  return out;
+}
+
 void OtaUpdater::checkForUpdate() {
   if (WiFi.status() != WL_CONNECTED) return;
   if (fuotaGateway.isBusy()) {
@@ -116,9 +186,13 @@ void OtaUpdater::checkForUpdate() {
   // cleanGwId.replace(" ", "%20");
   // String fbGwUrl = String(FIREBASE_HOST) + "/ota/" + cleanGwId + ".json?auth=" + FIREBASE_AUTH;
 
+  // Samakan parameter device= di URL manifest dengan ID yang benar.
+  // Tahan terhadap macro yang salah nilai (mis. device=ESP32-WATER-01):
+  // nilai APA PUN di belakang "device=" diganti, bukan dicocokkan.
+  // Bila parameter tidak ada, ditambahkan.
   // IMPLEMENTASI LOCAL SERVER (Laptop)
   #ifdef OTA_MANIFEST_URL
-  String fbNodeUrl = String(OTA_MANIFEST_URL);
+  String fbNodeUrl = withManifestDevice(String(OTA_MANIFEST_URL), String(KODE_NODE));
   #else
   // Hormati skema https bila port 443 (mis. tunnel TLS) — fallback http + port.
   #if defined(LOCAL_SERVER_PORT) && LOCAL_SERVER_PORT == 443
@@ -128,18 +202,7 @@ void OtaUpdater::checkForUpdate() {
   #endif
   #endif
   // Gateway cek manifest MILIKNYA SENDIRI (device=GATEWAY_ID), bukan manifest node.
-  // Sebelumnya fbGwUrl = fbNodeUrl sehingga pending OTA gateway tidak pernah terlihat.
-  String fbGwUrl = fbNodeUrl;
-  {
-    String nodeParam = "device=" + String(KODE_NODE);
-    String gwParam = "device=" + String(GATEWAY_ID);
-    int di = fbGwUrl.indexOf(nodeParam);
-    if (di != -1) {
-      fbGwUrl = fbGwUrl.substring(0, di) + gwParam + fbGwUrl.substring(di + nodeParam.length());
-    } else if (fbGwUrl.indexOf("device=") == -1) {
-      fbGwUrl += (fbGwUrl.indexOf("?") == -1 ? "?" : "&") + gwParam;
-    }
-  }
+  String fbGwUrl = withManifestDevice(fbNodeUrl, String(GATEWAY_ID));
 
   // --- CEK NODE SENSOR DULU (prioritas utama - LoRa FUOTA) ---
   static String lastFlashedNodeVersion = "";
@@ -185,6 +248,9 @@ void OtaUpdater::checkForUpdate() {
 
       } else {
         Serial.println("[OTA] Menjalankan update WiFi internal Gateway dari: " + gwFwUrl);
+        // Catat dulu sebelum flash: bila httpUpdate me-reboot sendiri / crash,
+        // laporan success dikirim dari boot berikut (reportPendingAfterReboot).
+        writePendingOta(gwVer, gwOtaId);
         FirebaseClient::updateOtaStatus(GATEWAY_ID, "downloading", 30, "", "", gwOtaId);
 
         bool isHttps = gwFwUrl.startsWith("https://");
@@ -201,6 +267,9 @@ void OtaUpdater::checkForUpdate() {
         }
 
         if (result == HTTP_UPDATE_OK) {
+          // httpUpdate mengembalikan OK berarti TIDAK auto-reboot: hapus penanda
+          // (laporan success dikirim di bawah), lalu restart manual.
+          clearPendingOta();
           Serial.println("[OTA] Gateway berhasil update! Melaporkan status final...");
           // Flash lama bisa memutus WiFi: sambungkan ulang dulu agar laporan
           // success tidak hilang (job nyangkut "flashing" di dashboard).
@@ -218,6 +287,7 @@ void OtaUpdater::checkForUpdate() {
           ESP.restart();
           return;
         } else {
+          clearPendingOta(); // gagal bersih: tidak ada yang perlu dilaporkan ulang
           String err = httpUpdate.getLastErrorString();
           Serial.printf("[OTA] GAGAL flash Gateway (%d): %s\n", httpUpdate.getLastError(), err.c_str());
           FirebaseClient::updateOtaStatus(GATEWAY_ID, "failed", 0, err, "", gwOtaId);

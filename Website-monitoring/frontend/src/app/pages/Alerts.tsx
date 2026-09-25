@@ -107,20 +107,21 @@ export function Alerts() {
     const unreadAlerts = alerts.filter((a) => !a.isRead);
     if (unreadAlerts.length === 0) return;
 
+    // Optimistic UI: tandai lokal seketika, 1 request bulk di background.
+    // (N request PATCH berurutan antre lama di serve single-thread.)
     setMarkingAll(true);
+    setAlerts((prev) => prev.map((a) => ({ ...a, isRead: true })));
+    if (selectedAlert && !selectedAlert.isRead) {
+      setSelectedAlert((prev) => (prev ? { ...prev, isRead: true } : null));
+    }
+    window.dispatchEvent(
+      new CustomEvent('alerts-updated', { detail: { unreadCount: 0 } })
+    );
     try {
-      await Promise.allSettled(
-        unreadAlerts.map((a) => (a.backendId ? api.markAlertRead(a.backendId) : Promise.resolve()))
-      );
-      setAlerts((prev) => prev.map((a) => ({ ...a, isRead: true })));
-      if (selectedAlert && !selectedAlert.isRead) {
-        setSelectedAlert((prev) => (prev ? { ...prev, isRead: true } : null));
-      }
-      window.dispatchEvent(
-        new CustomEvent('alerts-updated', { detail: { unreadCount: 0 } })
-      );
+      await api.markAllAlertsRead();
     } catch (err) {
       console.error('Gagal menandai seluruh alert sebagai dibaca:', err);
+      loadAlerts();
     } finally {
       setMarkingAll(false);
     }

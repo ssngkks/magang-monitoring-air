@@ -63,7 +63,8 @@ export function Dashboard() {
         return;
       }
 
-      const primaryNode = nodes[0];
+      // Penjaga node-utama: abaikan baris hantu/pending — pilih device aktif duluan
+      const primaryNode = nodes.find((n) => (n.status ?? 'active') === 'active') ?? nodes[0];
       setPrimaryNodeId(primaryNode.id);
       const lr = (primaryNode as any).last_reading || {};
 

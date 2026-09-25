@@ -33,8 +33,10 @@ class DeviceLifecycleController extends Controller
      */
     public function hello(Request $request)
     {
+        // Anti-hantu: ID sampah ("0", noise LoRa ter-parse) DITOLAK di pintu —
+        // minimal 3 karakter alfanumerik. ID legit (ESP32-NODE-01) lolos.
         $validated = $request->validate([
-            'device_id' => ['required', 'string', 'max:50'],
+            'device_id' => ['required', 'string', 'min:3', 'max:50', 'regex:/^[A-Za-z0-9][A-Za-z0-9_\-]*$/'],
             'device_role' => ['nullable', 'string', 'in:node,gateway'],
             'device_key' => ['required', 'string'],
             'firmware_version' => ['nullable', 'string', 'max:30'],
@@ -42,6 +44,9 @@ class DeviceLifecycleController extends Controller
             'ip_address' => ['nullable', 'string', 'max:45'],
             'capabilities' => ['nullable', 'array'],
             'capabilities.*' => ['string', 'max:50'],
+        ], [
+            'device_id.min' => 'Identitas device minimal 3 karakter.',
+            'device_id.regex' => 'Identitas device hanya boleh huruf, angka, strip, dan underscore.',
         ]);
 
         // §7: device_key wajib cocok dengan DEVICE_KEY server (hash, hash_equals).

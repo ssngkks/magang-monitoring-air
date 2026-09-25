@@ -64,7 +64,8 @@ export function WaterQualityDetail() {
         return;
       }
 
-      const primaryNode = nodes[0];
+      // Penjaga node-utama: abaikan baris hantu/pending — pilih device aktif duluan
+      const primaryNode = nodes.find((n) => ((n as any).status ?? 'active') === 'active') ?? nodes[0];
       const lr = (primaryNode as any).last_reading || {};
 
       setMetrics({
@@ -83,15 +84,16 @@ export function WaterQualityDetail() {
         setLastSyncDate(d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }));
       }
 
-      // Fetch historical data
-      const queryParams: Record<string, string> = { range: timeRange };
+      // Fetch historical data: 1 request, server mengembalikan ≤200 titik
+      // yang tersebar MERATA selebar rentang (downsample server-side).
+      const chartParams = new URLSearchParams({ range: timeRange, downsample: '200' });
       if (timeRange === 'custom') {
-        queryParams.from = customStartDate;
-        queryParams.to = customEndDate;
+        chartParams.set('from', customStartDate);
+        chartParams.set('to', customEndDate);
       }
 
-      const historyRes = await api.sensorData(String(primaryNode.id), queryParams);
-      const readings = historyRes.data?.data || (Array.isArray(historyRes.data) ? historyRes.data : []);
+      const historyRes: any = await api.sensorData(String(primaryNode.id), chartParams.toString());
+      const readings = historyRes?.data?.data || (Array.isArray(historyRes?.data) ? historyRes.data : []);
 
       if (readings.length > 0) {
         const formatted = readings
@@ -100,7 +102,9 @@ export function WaterQualityDetail() {
           .map((r: any, idx: number) => {
             const dateObj = r.created_at ? new Date(r.created_at) : new Date(Date.now() - (readings.length - idx) * 300000);
             return {
-              time: dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+              time: timeRange === 'today'
+                ? dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+                : `${dateObj.toLocaleDateString('id-ID', { day: 'numeric', month: 'numeric' })} ${dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`,
               fullDate: dateObj.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
               ph: Number(r.ph ?? 7.0),
               turbidity: Number(r.turbidity ?? 0),

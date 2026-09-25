@@ -118,6 +118,11 @@ class AlertRepository
         Alert::where('id', $alertId)->update(['is_read' => true]);
     }
 
+    public function markAllAsRead(): int
+    {
+        return (int) Alert::where('is_read', false)->update(['is_read' => true]);
+    }
+
     public function markActioned(string|int $alertId, string|int $userId): void
     {
         Alert::where('id', $alertId)->update(['is_read' => true]);

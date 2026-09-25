@@ -88,12 +88,37 @@ class AlertController extends Controller
         $this->alertRepo->markAsRead($alertId);
         $alert['is_read'] = true;
 
-        Cache::forget("alerts_{$userId}_all_25");
-        Cache::forget("alerts_{$userId}_all_200");
-        Cache::forget("alerts_{$userId}_unread_200");
-        Cache::forget("alerts_{$userId}_unread_25");
+        $this->forgetAlertsCache($userId);
 
         return response()->json(['data' => $alert]);
+    }
+
+    /**
+     * Tandai SEMUA alert belum dibaca dalam 1 query — pengganti N request PATCH
+     * berurutan yang antre lama di server development single-thread.
+     */
+    public function markAllRead(Request $request)
+    {
+        $userId = (string) (Auth::id() ?? $request->attributes->get('firebase_uid'));
+
+        $count = $this->alertRepo->markAllAsRead();
+
+        $this->forgetAlertsCache($userId);
+
+        return response()->json([
+            'message' => $count > 0 ? "{$count} peringatan ditandai dibaca." : 'Tidak ada peringatan belum dibaca.',
+            'count' => $count,
+        ]);
+    }
+
+    protected function forgetAlertsCache(string $userId): void
+    {
+        foreach (['all', 'read', 'unread'] as $scope) {
+            foreach ([25, 100, 200] as $perPage) {
+                Cache::forget("alerts_{$userId}_{$scope}_{$perPage}");
+            }
+        }
+        Cache::forget("user_nodes_{$userId}");
     }
 
     private function formatTimestamp($timestamp): ?string

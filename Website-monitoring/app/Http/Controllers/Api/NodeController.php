@@ -105,12 +105,15 @@ class NodeController extends Controller
             'from' => ['nullable', 'date'],
             'to' => ['nullable', 'date'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:200'],
+            'cursor' => ['nullable', 'string', 'max:100'],
+            'downsample' => ['nullable', 'integer', 'min:10', 'max:500'],
         ]);
 
         $perPage = $request->integer('per_page', 25);
         $from = $request->input('from');
         $to = $request->input('to');
         $range = $request->input('range');
+        $cursor = $request->input('cursor');
 
         if ($range) {
             $now = new \DateTime;
@@ -123,10 +126,28 @@ class NodeController extends Controller
             } elseif ($range === '30d') {
                 $from = (clone $now)->modify('-30 days')->format(\DateTime::ATOM);
                 $to = $now->format(\DateTime::ATOM);
+            } elseif ($range === 'custom' && is_string($to) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+                // Tanggal custom tanpa jam = sampai akhir hari itu (bukan tengah malam).
+                $to = (new \DateTime($to.' 23:59:59'))->format(\DateTime::ATOM);
             }
         }
 
-        $paginated = $this->sensorRepo->getPaginated($nodeId, $perPage, null, $from, $to);
+        // Cursor dibuka agar client bisa melangkah ke halaman berikut.
+        // Downsample: kembalikan ≤ N titik merata selebar rentang (untuk chart).
+        $downsampleMeta = null;
+        if ($request->filled('downsample')) {
+            $downsampled = $this->sensorRepo->getDownsampled($nodeId, $request->integer('downsample'), $from, $to);
+            $sourceRows = $downsampled['rows'];
+            $downsampleMeta = [
+                'downsampled' => true,
+                'requested' => $request->integer('downsample'),
+                'returned' => count($sourceRows),
+                'total_in_range' => $downsampled['total'],
+            ];
+        } else {
+            $paginated = $this->sensorRepo->getPaginated($nodeId, $perPage, $cursor, $from, $to);
+            $sourceRows = $paginated['data'];
+        }
 
         $rows = array_map(function (array $row) use ($node) {
             return [
@@ -148,7 +169,14 @@ class NodeController extends Controller
                 'stability_status' => $row['stability_status'] ?? 'Stabil',
                 'created_at' => $this->formatTimestamp($row['created_at'] ?? $row['received_at'] ?? null),
             ];
-        }, $paginated['data']);
+        }, $sourceRows);
+
+        if ($downsampleMeta !== null) {
+            return response()->json([
+                'data' => $rows,
+                'meta' => $downsampleMeta,
+            ]);
+        }
 
         return response()->json([
             'data' => $rows,

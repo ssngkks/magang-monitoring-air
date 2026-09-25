@@ -151,9 +151,34 @@ class SensorDataRepository
         return $rows[0] ?? null;
     }
 
+    /**
+     * Ambil ≤ $maxPoints baris yang tersebar MERATA selebar rentang [from, to]
+     * (bukan N terbaru saja) — untuk chart rentang panjang pada data padat.
+     * Mengembalikan ['rows' => ..., 'total' => ...], terbaru dulu.
+     */
+    public function getDownsampled(string|int $nodeId, int $maxPoints, ?string $from = null, ?string $to = null): array
+    {
+        $maxPoints = max(10, min(500, $maxPoints));
+        $all = $this->getByNodeId($nodeId, 20000, $from, $to);
+        $total = count($all);
+
+        if ($total <= $maxPoints) {
+            return ['rows' => $all, 'total' => $total];
+        }
+
+        $step = $total / $maxPoints;
+        $sampled = [];
+        for ($i = 0; $i < $maxPoints; $i++) {
+            $sampled[] = $all[(int) floor($i * $step)];
+        }
+
+        return ['rows' => $sampled, 'total' => $total];
+    }
+
     public function getPaginated(string|int $nodeId, int $perPage = 25, ?string $cursor = null, ?string $from = null, ?string $to = null): array
     {
-        $all = $this->getByNodeId($nodeId, 1000, $from, $to);
+        // Ambil cukup dalam agar cursor chart bisa melangkah jauh (cap akhir di client).
+        $all = $this->getByNodeId($nodeId, 5000, $from, $to);
         $total = count($all);
 
         $startIndex = 0;

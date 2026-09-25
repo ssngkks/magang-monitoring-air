@@ -39,6 +39,8 @@
 #define OTA_CHECK_INTERVAL         60000UL   // Cek manifest OTA tiap 60 detik (LAN; bikin "force check" nyaris instan)
 #define HEARTBEAT_INTERVAL         15000UL   // Heartbeat ke Laravel tiap ±15 detik (audit.md §5.6)
 #define HELLO_REFRESH_INTERVAL     1800000UL // Segarkan hello node tiap 30 menit (bila HELLO LoRa terlewat)
+#define NODE_SILENCE_WARN_MS       300000UL  // Peringatkan bila node sepi >5 menit
+#define NODE_SILENCE_WARN_REPEAT_MS 60000UL  // Ulangi peringatan tiap 60 detik selama sepi
 
 #ifndef CURRENT_FW_VERSION
 #define CURRENT_FW_VERSION "v1.0.2"
@@ -60,6 +62,8 @@ unsigned long lastWiFiCheck = 0;
 unsigned long lastHistoryUpload = 0;
 unsigned long lastOtaCheck = 0;
 unsigned long lastHeartbeat = 0;
+unsigned long lastNodePacketTime = 0;
+unsigned long lastNodeWarnTime = 0;
 bool wifiConnected = false;
 bool gatewayHelloSent = false;
 
@@ -172,9 +176,9 @@ void checkTelegramAlert(float ph, int turbidity, float temp, float waterLevel,
     rekomendasi = "Seluruh parameter beroperasi dalam batas aman. Sistem berjalan optimal.";
   }
 
-  String icon = (ai.classId == AI_BAHAYA) ? "🚨 *BAHAYAA, last11pmtest*\n\n"
-              : (ai.classId == AI_ANOMALI) ? "⚠️ *WARNING, 11:44pm*\n\n"
-                                            : "✅ *NORMAL, TERTAWA TAPI TERLUKA😂*\n\n";
+  String icon = (ai.classId == AI_BAHAYA) ? "🚨 *BAHAYA_HIDUP JOKOWI*\n\n"
+              : (ai.classId == AI_ANOMALI) ? "⚠️ *WARNING*\n\n"
+                                            : "✅ *NORMAL*\n\n";
 
   String message = icon;
   message += "*Lokasi:* Unit Sensor Tandon Utama\n";
@@ -237,6 +241,7 @@ void setup() {
 
   Serial.println("STATUS LORA       : SIAP");
   OtaUpdater::begin();
+  Serial.printf("FIRMWARE BERJALAN  : %s\n", CURRENT_FW_VERSION);
   Serial.println("MENUNGGU DATA DARI NODE SENSOR (ESP32 #1)...");
   Serial.println("========================================\n");
 
@@ -245,6 +250,10 @@ void setup() {
   if (wifiConnected) {
     gatewayHelloSent = FirebaseClient::sendHello(GATEWAY_ID, "gateway", CURRENT_FW_VERSION, GATEWAY_CAPABILITIES);
     lastHeartbeat = millis();
+    lastNodePacketTime = millis();
+    // Selesaikan laporan update sebelumnya yang terpotong reboot
+    // (httpUpdate sukses me-reboot sendiri sebelum sempat melapor).
+    OtaUpdater::reportPendingAfterReboot();
   }
 }
 
@@ -272,6 +281,16 @@ void loop() {
     }
   }
 
+  // Peringatan node sepi: gateway TIDAK BISA membangunkan node dari sini
+  // (node memancar buta satu arah), jadi hanya laporkan + arahkan cek fisik.
+  // Dashboard ikut menunjukkan STALE/OFFLINE via last_seen yang menua.
+  if (millis() - lastNodePacketTime >= NODE_SILENCE_WARN_MS &&
+      millis() - lastNodeWarnTime >= NODE_SILENCE_WARN_REPEAT_MS) {
+    lastNodeWarnTime = millis();
+    unsigned long silentSec = (millis() - lastNodePacketTime) / 1000UL;
+    Serial.printf("\n[PERINGATAN] Tidak ada paket LoRa dari node selama %lu detik! Cek daya/kabel USB ESP32 #1, LED-nya (harus kedip tiap ~3 detik), lalu lihat Serial node.\n", silentSec);
+  }
+
 
   // Jika Gateway sedang mentransmisikan FUOTA via LoRa ke Node,
   // tahan pemrosesan data sensor agar kanal radio LoRa tidak bertabrakan
@@ -287,6 +306,7 @@ void loop() {
   while (LoRa.available()) {
     receivedData += (char)LoRa.read();
   }
+  lastNodePacketTime = millis();
 
   // Paket pengumuman kapabilitas dari node (audit.md §5): teruskan sebagai HTTP hello.
   if (receivedData.startsWith("HELLO:")) {
@@ -296,7 +316,10 @@ void loop() {
     if (helloFw.length() == 0) helloFw = "1.0.0";
     if (helloCaps.length() == 0) helloCaps = NODE_DEFAULT_CAPABILITIES;
     Serial.println("[HELLO] Paket pengumuman dari node: " + helloNode + " caps=" + helloCaps);
-    if (wifiConnected && helloNode.length() > 0) {
+    if (helloNode.length() > 0 && helloNode.length() < 3) {
+      Serial.println("[HELLO] ID terlalu pendek, diduga noise — diabaikan, tidak diteruskan.");
+    }
+    if (wifiConnected && helloNode.length() >= 3) {
       if (FirebaseClient::sendHello(helloNode, "node", helloFw, helloCaps)) {
         lastNodeHelloId = helloNode;
         lastNodeCaps = helloCaps;
@@ -323,7 +346,9 @@ void loop() {
   // Pastikan node pengirim sudah hello ke Laravel (§5.3): bila paket HELLO LoRa
   // terlewat (mis. gateway reboot belakangan), teruskan hello dari paket sensor
   // dengan kapabilitas default + mpu6050 bila payload memuat data MPU.
-  if (wifiConnected && packetNodeId.length() > 0 &&
+  // Anti-hantu: ID sampah ("0", noise LoRa ter-parse) tidak diteruskan —
+  // hello backend juga menolak ID < 3 karakter.
+  if (wifiConnected && packetNodeId.length() >= 3 &&
       (lastNodeHelloId != packetNodeId || millis() - lastNodeHelloTime >= HELLO_REFRESH_INTERVAL)) {
     String inferredCaps = NODE_DEFAULT_CAPABILITIES;
     if (receivedData.indexOf("ACC:") != -1) inferredCaps += ",mpu6050";

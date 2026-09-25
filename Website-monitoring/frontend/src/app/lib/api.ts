@@ -61,7 +61,7 @@ export const api = {
   logout: () => apiFetch<{ message: string }>('/logout', { method: 'POST' }),
   nodes: () => apiFetch<{ data: Node[] }>('/nodes'),
   sensorData: (nodeId: string | number, params = '') =>
-    apiFetch<{ data: SensorData[]; meta: { current_page: number; last_page: number } }>(
+    apiFetch<{ data: SensorData[]; meta: { per_page?: number; has_more?: boolean; next_cursor?: string | null; total?: number; downsampled?: boolean; requested?: number; returned?: number; total_in_range?: number } }>(
       `/nodes/${nodeId}/sensor-data${params ? `?${params}` : ''}`,
     ),
   alerts: (params = '') =>
@@ -70,6 +70,8 @@ export const api = {
     ),
   markAlertRead: (id: string | number) =>
     apiFetch<{ data: AlertData }>(`/alerts/${id}/read`, { method: 'PATCH' }),
+  markAllAlertsRead: () =>
+    apiFetch<{ message: string; count: number }>(`/alerts/read-all`, { method: 'PATCH' }),
   reportsSummary: () =>
     apiFetch<{
       data: {

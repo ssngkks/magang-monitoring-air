@@ -63,7 +63,8 @@ export function EnvironmentDetail() {
         return;
       }
 
-      const primaryNode = nodes[0];
+      // Penjaga node-utama: abaikan baris hantu/pending — pilih device aktif duluan
+      const primaryNode = nodes.find((n) => ((n as any).status ?? 'active') === 'active') ?? nodes[0];
       const lr = (primaryNode as any).last_reading || {};
 
       const currentTemp = Number(lr.temp ?? 28.5);
@@ -75,15 +76,16 @@ export function EnvironmentDetail() {
         setLastSyncDate(d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }));
       }
 
-      // Fetch historical data
-      const queryParams: Record<string, string> = { range: timeRange };
+      // Fetch historical data: 1 request, server mengembalikan ≤200 titik
+      // yang tersebar MERATA selebar rentang (downsample server-side).
+      const chartParams = new URLSearchParams({ range: timeRange, downsample: '200' });
       if (timeRange === 'custom') {
-        queryParams.from = customStartDate;
-        queryParams.to = customEndDate;
+        chartParams.set('from', customStartDate);
+        chartParams.set('to', customEndDate);
       }
 
-      const historyRes = await api.sensorData(String(primaryNode.id), queryParams);
-      const readings = historyRes.data?.data || (Array.isArray(historyRes.data) ? historyRes.data : []);
+      const historyRes: any = await api.sensorData(String(primaryNode.id), chartParams.toString());
+      const readings = historyRes?.data?.data || (Array.isArray(historyRes?.data) ? historyRes.data : []);
 
       if (readings.length > 0) {
         let minT = 999;
@@ -105,7 +107,9 @@ export function EnvironmentDetail() {
             if (h > maxH) maxH = h;
 
             return {
-              time: dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+              time: timeRange === 'today'
+                ? dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+                : `${dateObj.toLocaleDateString('id-ID', { day: 'numeric', month: 'numeric' })} ${dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`,
               fullDate: dateObj.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
               temperature: t,
               humidity: h,

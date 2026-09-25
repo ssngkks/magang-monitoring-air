@@ -46,10 +46,21 @@ LoraFuotaNode fuotaNode(KODE_NODE);
 #define SENSOR_READ_INTERVAL 2000
 #define LORA_SEND_INTERVAL   3000
 
+// Watchdog pengiriman: bila tidak ada TX LoRa sukses selama ini, node restart
+// sendiri (anti-diam total; tidak berlaku saat FUOTA karena update butuh waktu).
+#define TX_WATCHDOG_MS 300000UL // 5 menit
+
+// LED onboard untuk heartbeat fisik (kedip tiap TX sukses).
+#ifndef LED_PIN
+#define LED_PIN 2
+#endif
+#define LED_BLINK_MS 120
+
 SensorManager sensors;
 bool loraReady = false;
 unsigned long lastSensorRead = 0;
 unsigned long lastLoraSend = 0;
+unsigned long lastSuccessfulTx = 0;
 
 // ============================================================
 // DAFTAR SENSOR
@@ -116,6 +127,14 @@ void sendLoraData() {
   Serial.print("PAYLOAD           : ");
   Serial.println(payload);
   Serial.println();
+
+  if (sent) {
+    lastSuccessfulTx = millis();
+    // Heartbeat fisik: kedip LED tiap transmisi sukses.
+    digitalWrite(LED_PIN, HIGH);
+    delay(LED_BLINK_MS);
+    digitalWrite(LED_PIN, LOW);
+  }
 }
 
 // Paket pengumuman kapabilitas ke gateway (audit.md §5/§6).
@@ -154,10 +173,23 @@ void setup() {
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
   LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
 
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+
   loraReady = LoRa.begin(LORA_FREQ);
   Serial.println(loraReady ? "STATUS LORA       : OK" : "STATUS LORA       : GAGAL");
   fuotaNode.begin();
   fuotaNode.setRunningVersion(NODE_FW_VERSION);
+  Serial.printf("FIRMWARE BERJALAN  : %s\n", NODE_FW_VERSION);
+
+  // Sinyal hidup 3x kedip saat boot + acuan awal watchdog.
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(LED_PIN, HIGH);
+    delay(150);
+    digitalWrite(LED_PIN, LOW);
+    delay(150);
+  }
+  lastSuccessfulTx = millis();
   Serial.println("STATUS FUOTA LORA : SIAP MENERIMA OTA TANPA KABEL");
   Serial.println("========================================\n");
 
@@ -207,6 +239,17 @@ void loop() {
   if (now - lastLoraSend >= LORA_SEND_INTERVAL) {
     lastLoraSend = now;
     sendLoraData();
+  }
+
+  // Watchdog pengiriman: diam >5 menit (bukan saat FUOTA) = ada yang salah,
+  // restart agar node tidak perlu dicabut manual. Diagnosis via Serial/UI tetap ada.
+  // PENTING: pakai millis() segar — variabel now() di atas basi (dicatat sebelum
+  // sendLoraData), sehingga now - lastSuccessfulTx underflow unsigned dan
+  // me-reboot node setiap ada kiriman sukses (bug loop terkonfirmasi).
+  if (!fuotaNode.isUpdating() && loraReady && (millis() - lastSuccessfulTx >= TX_WATCHDOG_MS)) {
+    Serial.println("[WATCHDOG] Tidak ada transmisi LoRa sukses >5 menit. Restart node...");
+    delay(300);
+    ESP.restart();
   }
 
   delay(5); // Yield ke FreeRTOS IDLE task untuk mencegah watchdog timeout
