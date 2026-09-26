@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   RefreshCw,
   Search,
@@ -21,10 +21,12 @@ import {
   AIDiagnosticCurrent,
   AIDiagnosticHistoryItem,
 } from '../lib/api';
-import { useLanguage } from '../context/LanguageContext';
+import { useNode } from '../context/NodeContext';
+import { getNodeCode } from '../lib/nodes';
 
 export function AIAnalytics() {
-  const { t } = useLanguage();
+  // Node aktif global — tanpa selector kedua; seluruh analisis mengikuti node ini.
+  const { selectedNode, selectedNodeId } = useNode();
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,11 +34,17 @@ export function AIAnalytics() {
   const [historySearch, setHistorySearch] = useState<string>('');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>('all');
 
-  const fetchDiagnostics = async (isManualRefresh = false) => {
+  const fetchDiagnostics = useCallback(async (isManualRefresh = false) => {
+    if (!selectedNodeId) {
+      setData(null);
+      setLoading(false);
+      if (isManualRefresh) setRefreshing(false);
+      return;
+    }
     if (isManualRefresh) setRefreshing(true);
     try {
       setError(null);
-      const response = await api.aiDiagnostics();
+      const response = await api.aiDiagnostics(selectedNodeId);
       if (response && response.data) {
         setData(response.data);
       } else {
@@ -49,7 +57,7 @@ export function AIAnalytics() {
       setLoading(false);
       if (isManualRefresh) setRefreshing(false);
     }
-  };
+  }, [selectedNodeId]);
 
   useEffect(() => {
     fetchDiagnostics();
@@ -57,30 +65,16 @@ export function AIAnalytics() {
       fetchDiagnostics();
     }, 15000); // Polling otomatis tiap 15 detik
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchDiagnostics]);
 
-  const current: AIDiagnosticCurrent = data?.current || {
-    status: 'Normal',
-    confidence: 99.2,
-    diagnosis: 'Kualitas air aman dan seluruh parameter sistem beroperasi dalam batas optimal.',
-    triggers: [],
-    latency_us: 28,
-    radar: [
-      { subject: 'pH Air', nilai_aktual: 7.2, skor: 15, batas_aman: 45, unit: 'pH' },
-      { subject: 'Kekeruhan', nilai_aktual: 1.2, skor: 12, batas_aman: 20, unit: 'NTU' },
-      { subject: 'Suhu Lingkungan', nilai_aktual: 26.5, skor: 26, batas_aman: 50, unit: '°C' },
-      { subject: 'Ketinggian Air', nilai_aktual: 68.0, skor: 68, batas_aman: 85, unit: 'cm' },
-      { subject: 'Getaran Mekanik', nilai_aktual: 0, skor: 5, batas_aman: 25, unit: 'pulsa' },
-    ],
-    raw_reading: { ph: 7.2, turbidity: 1.2, temp: 26.5, water_level: 68, vibration: 0 },
-    timestamp: new Date().toISOString(),
-  };
+  // Tanpa data backend → null (jangan tampilkan angka palsu).
+  const current: AIDiagnosticCurrent | null = data?.current || null;
 
   const history: AIDiagnosticHistoryItem[] = data?.history || [];
 
   const formattedUpdateTime = useMemo(() => {
     try {
-      if (!current.timestamp) return 'Menunggu data...';
+      if (!current?.timestamp) return 'Menunggu data...';
       if (current.timestamp.includes('WIB')) return current.timestamp;
       const d = new Date(current.timestamp);
       if (isNaN(d.getTime())) return `${current.timestamp} WIB`;
@@ -96,9 +90,9 @@ export function AIAnalytics() {
       }).replace(/:/g, '.');
       return `${datePart}, ${timePart} WIB`;
     } catch {
-      return `${current.timestamp}`;
+      return `${current?.timestamp ?? '-'}`;
     }
-  }, [current.timestamp]);
+  }, [current?.timestamp]);
 
   // Filter history
   const filteredHistory = useMemo(() => {
@@ -131,13 +125,43 @@ export function AIAnalytics() {
       borderAccent: 'border-rose-500/40',
       radarColor: '#ef4444',
     },
-  }[current.status] || {
+  }[current?.status ?? ''] || {
     textClass: 'text-gray-600 dark:text-gray-300',
     borderAccent: 'border-gray-500',
     radarColor: '#3b82f6',
   };
 
-  const displayStatus = current.status === 'Anomali' ? 'Warning' : current.status;
+  const displayStatus = !current ? '-' : current.status === 'Anomali' ? 'Warning' : current.status;
+
+  // Tren status dari riwayat + rekomendasi berbasis trigger aktual (tanpa fabrikasi).
+  const trendCounts = useMemo(() => {
+    const c = { Normal: 0, Warning: 0, Bahaya: 0 };
+    for (const h of history) {
+      if (h.status === 'Bahaya') c.Bahaya += 1;
+      else if (h.status === 'Anomali') c.Warning += 1;
+      else c.Normal += 1;
+    }
+    return c;
+  }, [history]);
+
+  const recommendations: string[] = useMemo(() => {
+    if (!current) return [];
+    if (!current.triggers || current.triggers.length === 0) {
+      return ['Semua parameter dalam batas aman — pertahankan jadwal perawatan dan kalibrasi rutin.'];
+    }
+    const advice: Record<string, string> = {
+      ph: 'Periksa kalibrasi sensor pH dan sumber air baku.',
+      turbidity: 'Periksa media filter dan endapan di tandon.',
+      temp: 'Periksa ventilasi dan paparan panas di sekitar tandon.',
+      water_level: 'Periksa pompa pengisi dan sensor level ultrasonik.',
+      vibration: 'Periksa dudukan pompa dan peredam getaran.',
+    };
+    return current.triggers.map((tr) => {
+      const key = Object.keys(advice).find((k) => tr.param.toLowerCase().includes(k));
+      const base = `Parameter ${tr.param} (${tr.value}, level ${tr.level})`;
+      return key ? `${base} — ${advice[key]}` : `${base} — periksa kondisi lapangan.`;
+    });
+  }, [current]);
 
   return (
     <div className="space-y-6 p-4 sm:p-6 lg:p-8 w-full max-w-[1600px] mx-auto overflow-x-hidden">
@@ -149,6 +173,11 @@ export function AIAnalytics() {
           <h1 className="text-2xl 2xl:text-3xl font-bold tracking-tight text-gray-900 dark:text-gray-100 border-l-4 border-blue-600 pl-3">
             Analisis AI
           </h1>
+          {selectedNode && (
+            <p className="text-xs font-mono text-gray-600 dark:text-gray-300 mt-1">
+              Node aktif: <strong>{getNodeCode(selectedNode)}</strong> • {selectedNode.nama_lokasi}
+            </p>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-3 shrink-0">
@@ -203,6 +232,21 @@ export function AIAnalytics() {
         </div>
       )}
 
+      {!current && !loading && !error && (
+        <div className="flex items-center justify-center p-12 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-xs">
+          <div className="text-center">
+            <p className="text-sm font-bold text-gray-800 dark:text-gray-200">
+              Belum ada hasil analisis AI untuk node ini.
+            </p>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {selectedNode ? `Node: ${getNodeCode(selectedNode)}` : 'Pilih node aktif terlebih dahulu.'}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {current && (
+      <>
       {/* =========================================================================
           3.1 KARTU DIAGNOSIS MULTIVARIAT AI (XAI CARD)
       ========================================================================= */}
@@ -403,6 +447,40 @@ export function AIAnalytics() {
         </div>
       </div>
 
+
+      </>
+      )}
+
+      {/* TREN STATUS + REKOMENDASI BERBASIS DATA AKTUAL */}
+      {current && (
+        <div className="rounded-xl border border-gray-200 bg-white p-4 sm:p-6 shadow-xs dark:border-gray-800 dark:bg-gray-900">
+          <h3 className="font-semibold text-gray-900 dark:text-gray-100">
+            Tren & Rekomendasi
+          </h3>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Dihitung dari {history.length} diagnosis terakhir node {selectedNode ? getNodeCode(selectedNode) : '-'}.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold">
+            <span className="rounded-full bg-green-50 dark:bg-green-950/50 px-2.5 py-1 text-green-600 dark:text-green-400">
+              Normal: {trendCounts.Normal}
+            </span>
+            <span className="rounded-full bg-yellow-50 dark:bg-yellow-950/50 px-2.5 py-1 text-yellow-600 dark:text-yellow-400">
+              Warning: {trendCounts.Warning}
+            </span>
+            <span className="rounded-full bg-red-50 dark:bg-red-950/50 px-2.5 py-1 text-red-600 dark:text-red-400">
+              Bahaya: {trendCounts.Bahaya}
+            </span>
+          </div>
+          <ul className="mt-3 space-y-1.5 text-xs text-gray-700 dark:text-gray-300">
+            {recommendations.map((rec, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="text-blue-600 dark:text-blue-400 font-bold">•</span>
+                <span>{rec}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* =========================================================================
           3.4 TABEL RIWAYAT DIAGNOSA AI

@@ -70,9 +70,12 @@ export const api = {
     ),
   markAlertRead: (id: string | number) =>
     apiFetch<{ data: AlertData }>(`/alerts/${id}/read`, { method: 'PATCH' }),
-  markAllAlertsRead: () =>
-    apiFetch<{ message: string; count: number }>(`/alerts/read-all`, { method: 'PATCH' }),
-  reportsSummary: () =>
+  markAllAlertsRead: (nodeId?: string | number) =>
+    apiFetch<{ message: string; count: number }>(
+      `/alerts/read-all${nodeId !== undefined && nodeId !== null && nodeId !== '' ? `?node_id=${encodeURIComponent(String(nodeId))}` : ''}`,
+      { method: 'PATCH' }
+    ),
+  reportsSummary: (params = '') =>
     apiFetch<{
       data: {
         total_records: number;
@@ -88,7 +91,7 @@ export const api = {
           water_level: number;
         } | null;
       };
-    }>('/reports/summary'),
+    }>(`/reports/summary${params ? `?${params}` : ''}`),
   reportsData: (params = '') =>
     apiFetch<{
       data: {
@@ -291,6 +294,29 @@ export interface User {
   photo_url?: string | null;
 }
 
+export interface NodeLastReading {
+  id?: string | number;
+  ph?: number | string | null;
+  temp?: number | string | null;
+  humidity?: number | string | null;
+  turbidity?: number | string | null;
+  water_level?: number | string | null;
+  vibration?: boolean | number | null;
+  mpu_x?: number | null;
+  mpu_y?: number | null;
+  mpu_z?: number | null;
+  roll?: number | null;
+  pitch?: number | null;
+  yaw?: number | null;
+  stability_status?: string;
+  ai_status?: string | null;
+  ai_confidence?: number | null;
+  ai_diagnosis?: string | null;
+  rssi?: number | null;
+  snr?: number | null;
+  created_at?: string;
+}
+
 export interface Node {
   id: string | number;
   kode_node: string;
@@ -298,6 +324,12 @@ export interface Node {
   status: string;
   is_online: boolean;
   last_seen_at: string | null;
+  device_name?: string;
+  connection?: 'ONLINE' | 'STALE' | 'OFFLINE' | string;
+  rssi?: number | null;
+  snr?: number | null;
+  updated_at?: string;
+  last_reading?: NodeLastReading | null;
 }
 
 export interface SensorData {

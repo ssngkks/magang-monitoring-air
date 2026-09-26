@@ -118,9 +118,19 @@ class AlertRepository
         Alert::where('id', $alertId)->update(['is_read' => true]);
     }
 
-    public function markAllAsRead(): int
+    public function markAllAsRead(?string $nodeId = null): int
     {
-        return (int) Alert::where('is_read', false)->update(['is_read' => true]);
+        $query = Alert::where('is_read', false);
+
+        if ($nodeId !== null && $nodeId !== '') {
+            $numericId = $this->resolveNodeId($nodeId);
+            if (! $numericId) {
+                return 0;
+            }
+            $query->where('node_id', $numericId);
+        }
+
+        return (int) $query->update(['is_read' => true]);
     }
 
     public function markActioned(string|int $alertId, string|int $userId): void

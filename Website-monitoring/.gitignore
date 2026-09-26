@@ -26,3 +26,15 @@ Homestead.json
 Homestead.yaml
 Thumbs.db
 /storage/app/firebase/*.json
+
+# Local environment files
+.env.*
+!.env.example
+.env.backup-*
+
+# Frontend generated files
+/frontend/node_modules
+/frontend/dist
+
+# Database backup lokal
+/database/water_monitoring_backup.sql

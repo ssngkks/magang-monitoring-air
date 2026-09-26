@@ -8,6 +8,7 @@ import { Alerts } from './pages/Alerts';
 import { Reports } from './pages/Reports';
 import { Settings } from './pages/Settings';
 import { DevicesManagement } from './pages/DevicesManagement';
+import { NodesMonitoring } from './pages/NodesMonitoring';
 import { WaterQualityDetail } from './pages/WaterQualityDetail';
 import { EnvironmentDetail } from './pages/EnvironmentDetail';
 import { WaterPhysicalDetail } from './pages/WaterPhysicalDetail';
@@ -31,6 +32,7 @@ export const router = createBrowserRouter([
       { path: 'environment', Component: EnvironmentDetail },
       { path: 'physical', Component: WaterPhysicalDetail },
       { path: 'ai-analytics', Component: AIAnalytics },
+      { path: 'nodes', Component: NodesMonitoring },
       { path: 'alerts', Component: Alerts },
       { path: 'devices', Component: DevicesManagement },
       { path: 'reports', Component: Reports },

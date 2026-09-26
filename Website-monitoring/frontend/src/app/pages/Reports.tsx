@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, ChangeEvent } from 'react';
 import {
   Download,
   FileSpreadsheet,
@@ -8,7 +8,6 @@ import {
   RefreshCw,
   Clock,
   Activity,
-  CheckCircle,
   FileText,
   Building2,
   Cpu,
@@ -23,7 +22,10 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { api, DeviceItem, LocationItem } from '../lib/api';
+import { api, LocationItem } from '../lib/api';
+import { getNodeCode } from '../lib/nodes';
+import { useNode } from '../context/NodeContext';
+import { NodeSelector } from '../components/NodeSelector';
 
 interface ReportSummary {
   total_records: number;
@@ -77,24 +79,21 @@ export function Reports() {
   const [endDate, setEndDate] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
-  const [selectedDevice, setSelectedDevice] = useState<string>('all');
   const [selectedLocation, setSelectedLocation] = useState<string>('all');
   const [selectedParam, setSelectedParam] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'table' | 'charts'>('table');
 
+  // Node aktif global (Phase 1) — histori selalu mengikuti node ini, bukan state lokal.
+  const { nodes, selectedNode, selectedNodeId, setSelectedNodeId, isLoading: nodesLoading } = useNode();
+
   // Metadata items
-  const [devicesList, setDevicesList] = useState<DeviceItem[]>([]);
   const [locationsList, setLocationsList] = useState<LocationItem[]>([]);
 
-  // Load locations & devices for filter dropdowns
+  // Load locations for filter dropdown
   useEffect(() => {
     const loadMetadata = async () => {
       try {
-        const [devRes, locRes] = await Promise.all([
-          api.devices().catch(() => ({ data: [] })),
-          api.locations().catch(() => ({ data: [] })),
-        ]);
-        if (devRes.data) setDevicesList(devRes.data);
+        const locRes = await api.locations().catch(() => ({ data: [] }));
         if (locRes.data) setLocationsList(locRes.data);
       } catch (e) {
         // Ignored
@@ -103,18 +102,38 @@ export function Reports() {
     loadMetadata();
   }, []);
 
-  // Fetch report data based on all filters
+  const [activePreset, setActivePreset] = useState<number | null>(7);
+
+  const setPreset = (days: number) => {
+    const end = new Date();
+    const start = new Date(Date.now() - days * 86400000);
+    setEndDate(end.toISOString().split('T')[0]);
+    setStartDate(start.toISOString().split('T')[0]);
+    setActivePreset(days);
+  };
+
+  const setCustomDate = (setter: (v: string) => void) => (e: ChangeEvent<HTMLInputElement>) => {
+    setter(e.target.value);
+    setActivePreset(null);
+  };
+
+  // Fetch report data berdasarkan node aktif + semua filter
   const fetchReportData = useCallback(async () => {
+    if (!selectedNodeId) {
+      setRecords([]);
+      setSummary(null);
+      setLoading(false);
+      return;
+    }
     try {
       setIsFiltering(true);
-      let query = `per_page=100`;
+      let query = `per_page=100&node_id=${encodeURIComponent(selectedNodeId)}`;
       if (startDate) query += `&from=${encodeURIComponent(startDate + 'T00:00:00')}`;
       if (endDate) query += `&to=${encodeURIComponent(endDate + 'T23:59:59')}`;
-      if (selectedDevice !== 'all') query += `&node_id=${encodeURIComponent(selectedDevice)}`;
       if (selectedParam !== 'all') query += `&parameter=${encodeURIComponent(selectedParam)}`;
 
       const [sumRes, dataRes] = await Promise.all([
-        api.reportsSummary(),
+        api.reportsSummary(query),
         api.reportsData(query),
       ]);
 
@@ -143,7 +162,7 @@ export function Reports() {
       setLoading(false);
       setIsFiltering(false);
     }
-  }, [startDate, endDate, selectedDevice, selectedLocation, selectedParam]);
+  }, [startDate, endDate, selectedNodeId, selectedLocation, selectedParam]);
 
   useEffect(() => {
     fetchReportData();
@@ -156,7 +175,7 @@ export function Reports() {
       return;
     }
 
-    const deviceText = selectedDevice === 'all' ? 'Semua Perangkat' : selectedDevice;
+    const deviceText = selectedNode ? getNodeCode(selectedNode) : '-';
     const locationText = selectedLocation === 'all' ? 'Semua Lokasi' : selectedLocation;
     const paramText = selectedParam === 'all' ? 'Semua Parameter' : selectedParam.toUpperCase();
 
@@ -231,7 +250,7 @@ export function Reports() {
       return;
     }
 
-    const deviceText = selectedDevice === 'all' ? 'Semua Perangkat' : selectedDevice;
+    const deviceText = selectedNode ? getNodeCode(selectedNode) : '-';
     const locationText = selectedLocation === 'all' ? 'Semua Lokasi' : selectedLocation;
     const paramText = selectedParam === 'all' ? 'Semua Parameter' : selectedParam.toUpperCase();
 
@@ -308,8 +327,13 @@ export function Reports() {
             Laporan & Data Riwayat Sensor
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Filter multi-dimensi dan ekspor data aktual database sistem monitoring IoT
+            Histori telemetri node aktif. Ganti Node Aktif untuk melihat histori node lain.
           </p>
+          {selectedNode && (
+            <p className="text-xs font-mono text-gray-600 dark:text-gray-300 mt-1">
+              Node: <strong>{getNodeCode(selectedNode)}</strong> • {selectedNode.nama_lokasi}
+            </p>
+          )}
           {lastSyncTime && (
             <p className="text-xs font-mono text-gray-500 dark:text-gray-400 mt-1">
               Terakhir sinkronisasi: <span className="font-semibold text-gray-700 dark:text-gray-300">{lastSyncTime}</span>
@@ -367,7 +391,7 @@ export function Reports() {
         <h2 className="text-xl font-bold text-gray-900">LAPORAN PEMANTAUAN KUALITAS AIR & SENSOR IOT</h2>
         <div className="mt-2 text-xs text-gray-600 grid grid-cols-2 gap-1">
           <span>Periode: <strong>{startDate} s/d {endDate}</strong></span>
-          <span>Perangkat: <strong>{selectedDevice === 'all' ? 'Semua Perangkat' : selectedDevice}</strong></span>
+          <span>Perangkat: <strong>{selectedNode ? getNodeCode(selectedNode) : '-'}</strong></span>
           <span>Lokasi: <strong>{selectedLocation === 'all' ? 'Semua Lokasi' : selectedLocation}</strong></span>
           <span>Waktu Unduh: <strong>{new Date().toLocaleString('id-ID')}</strong></span>
         </div>
@@ -382,6 +406,35 @@ export function Reports() {
           Filter Laporan Terpadu
         </div>
 
+        {/* Preset periode — baris khusus, terpisah dari date picker manual */}
+        <div className="flex flex-wrap items-center gap-2 mb-4 p-3 rounded-xl bg-blue-50/60 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/50">
+          <span className="flex items-center gap-1.5 text-xs font-bold text-gray-700 dark:text-gray-200">
+            <Clock className="w-4 h-4 text-blue-600 dark:text-blue-400" /> Periode:
+          </span>
+          {[
+            { label: '24 Jam', days: 1 },
+            { label: '7 Hari', days: 7 },
+            { label: '30 Hari', days: 30 },
+          ].map((p) => (
+            <button
+              key={p.label}
+              type="button"
+              onClick={() => setPreset(p.days)}
+              aria-pressed={activePreset === p.days}
+              className={`px-4 py-1.5 rounded-full text-xs font-bold transition-colors cursor-pointer ${
+                activePreset === p.days
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 hover:border-blue-400'
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+          {activePreset === null && (
+            <span className="text-[11px] text-gray-500 dark:text-gray-400">Rentang kustom (date picker)</span>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5 text-xs">
           {/* Tanggal Mulai */}
           <div>
@@ -391,7 +444,7 @@ export function Reports() {
             <input
               type="date"
               value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
+              onChange={setCustomDate(setStartDate)}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-xs focus:border-blue-500 focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
             />
           </div>
@@ -404,31 +457,17 @@ export function Reports() {
             <input
               type="date"
               value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
+              onChange={setCustomDate(setEndDate)}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-xs focus:border-blue-500 focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
             />
           </div>
 
-          {/* Filter Device */}
-          <div>
+          {/* Node aktif global */}
+          <div className="lg:col-span-2">
             <label className="block text-gray-500 dark:text-gray-400 font-medium mb-1 flex items-center gap-1">
-              <Cpu className="w-3.5 h-3.5" /> Perangkat / ESP32
+              <Cpu className="w-3.5 h-3.5" /> Node Aktif
             </label>
-            <select
-              value={selectedDevice}
-              onChange={(e) => setSelectedDevice(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-xs focus:border-blue-500 focus:outline-hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
-            >
-              <option value="all">Semua Perangkat (All)</option>
-              {devicesList.map((d) => (
-                <option key={d.id} value={d.kode_node}>
-                  {d.kode_node} ({d.device_name || 'ESP32'})
-                </option>
-              ))}
-              {devicesList.length === 0 && (
-                <option value="ESP32-WATER-01">ESP32-WATER-01 (Utama)</option>
-              )}
-            </select>
+            <NodeSelector nodes={nodes} value={selectedNodeId} onChange={setSelectedNodeId} className="w-full" />
           </div>
 
           {/* Filter Lokasi */}
@@ -612,7 +651,9 @@ export function Reports() {
               ) : records.length === 0 ? (
                 <tr>
                   <td colSpan={10} className="px-4 py-8 text-center text-gray-500">
-                    Tidak ada data ditemukan untuk kriteria filter yang dipilih.
+                    {nodesLoading
+                      ? 'Memuat data node...'
+                      : 'Tidak ada data histori untuk node ini pada periode yang dipilih.'}
                   </td>
                 </tr>
               ) : (

@@ -8,6 +8,9 @@ import {
   Download,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { getLastReading, getNodeCode } from '../lib/nodes';
+import { useNode } from '../context/NodeContext';
+import { NodeSelector } from '../components/NodeSelector';
 import {
   LineChart,
   Line,
@@ -43,6 +46,12 @@ export function WaterQualityDetail() {
   const [chartData, setChartData] = useState<any[]>([]);
   const [tableRows, setTableRows] = useState<any[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
+  const { nodes, selectedNode, selectedNodeId, setSelectedNodeId, isLoading: nodesLoading } = useNode();
+
+  // Tandai selesai saat daftar node global selesai dimuat (termasuk kasus kosong).
+  useEffect(() => {
+    if (!nodesLoading) setHasLoaded(true);
+  }, [nodesLoading]);
 
   const [metrics, setMetrics] = useState({
     ph: 7.2,
@@ -57,16 +66,12 @@ export function WaterQualityDetail() {
   const loadData = useCallback(async () => {
     try {
       setIsRefreshing(true);
-      const { data: nodes } = await api.nodes();
-      if (!nodes.length) {
-        setHasLoaded(true);
+      if (!selectedNode || !selectedNodeId) {
         setIsRefreshing(false);
         return;
       }
 
-      // Penjaga node-utama: abaikan baris hantu/pending — pilih device aktif duluan
-      const primaryNode = nodes.find((n) => ((n as any).status ?? 'active') === 'active') ?? nodes[0];
-      const lr = (primaryNode as any).last_reading || {};
+      const lr = getLastReading(selectedNode);
 
       setMetrics({
         ph: Number(lr.ph ?? 7.2),
@@ -78,8 +83,8 @@ export function WaterQualityDetail() {
         aiDiagnosis: lr.ai_diagnosis || 'Kualitas air memenuhi baku mutu standar Permenkes.',
       });
 
-      if (primaryNode.last_seen_at) {
-        const d = new Date(primaryNode.last_seen_at);
+      if (selectedNode.last_seen_at) {
+        const d = new Date(selectedNode.last_seen_at);
         setLastSyncTime(d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) + ' WIB');
         setLastSyncDate(d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }));
       }
@@ -92,7 +97,7 @@ export function WaterQualityDetail() {
         chartParams.set('to', customEndDate);
       }
 
-      const historyRes: any = await api.sensorData(String(primaryNode.id), chartParams.toString());
+      const historyRes: any = await api.sensorData(String(selectedNodeId), chartParams.toString());
       const readings = historyRes?.data?.data || (Array.isArray(historyRes?.data) ? historyRes.data : []);
 
       if (readings.length > 0) {
@@ -118,7 +123,7 @@ export function WaterQualityDetail() {
       setHasLoaded(true);
       setIsRefreshing(false);
     }
-  }, [timeRange, customStartDate, customEndDate]);
+  }, [selectedNode, selectedNodeId, timeRange, customStartDate, customEndDate]);
 
   useEffect(() => {
     loadData();
@@ -126,23 +131,22 @@ export function WaterQualityDetail() {
     return () => clearInterval(interval);
   }, [loadData]);
 
-  // Tabel 100 data terbaru — mengikuti rentang aktif (data lengkap ada di Reports)
+  // Tabel 100 data terbaru — mengikuti node terpilih & rentang aktif
   useEffect(() => {
     let cancelled = false;
     const fetchTable = async () => {
+      if (!selectedNodeId) {
+        if (!cancelled) setTableRows([]);
+        return;
+      }
       try {
         setTableLoading(true);
-        const { data: nodes } = await api.nodes();
-        if (!nodes.length) {
-          if (!cancelled) setTableRows([]);
-          return;
-        }
         const params = new URLSearchParams({ range: timeRange, per_page: '100' });
         if (timeRange === 'custom') {
           params.set('from', customStartDate);
           params.set('to', customEndDate);
         }
-        const res = await api.sensorData(String(nodes[0].id), params.toString());
+        const res = await api.sensorData(String(selectedNodeId), params.toString());
         const readings = res.data?.data || (Array.isArray(res.data) ? res.data : []);
         if (!cancelled) setTableRows(readings.slice(0, 100));
       } catch {
@@ -155,7 +159,7 @@ export function WaterQualityDetail() {
     return () => {
       cancelled = true;
     };
-  }, [timeRange, customStartDate, customEndDate]);
+  }, [selectedNodeId, timeRange, customStartDate, customEndDate]);
 
   // Evaluasi pH
   const phValue = metrics.ph;
@@ -227,6 +231,17 @@ export function WaterQualityDetail() {
             <span>Ekspor Laporan</span>
           </Link>
         </div>
+      </div>
+
+      {/* Node selector global — metrics, chart, tabel & timestamp mengikuti node terpilih */}
+      <div className="flex flex-wrap items-center gap-3 p-4 rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow-xs">
+        <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Node:</span>
+        <NodeSelector nodes={nodes} value={selectedNodeId} onChange={setSelectedNodeId} />
+        {selectedNode && (
+          <span className="text-[11px] text-gray-400">
+            {getNodeCode(selectedNode)} • {selectedNode.nama_lokasi}
+          </span>
+        )}
       </div>
 
       {/* Time Range Filter Bar */}
