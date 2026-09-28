@@ -49,20 +49,38 @@ class DeviceLifecycleController extends Controller
             'device_id.regex' => 'Identitas device hanya boleh huruf, angka, strip, dan underscore.',
         ]);
 
-        // §7: device_key wajib cocok dengan DEVICE_KEY server (hash, hash_equals).
+        $kode = $validated['device_id'];
+        $role = $validated['device_role'] ?? 'node';
+
+        // §7 & blueprint §3.3: device_key divalidasi terhadap provisioning key server
+        // atau token unik yang sudah tersimpan di database untuk node ini.
         $expected = (string) config('watermonitoring.device_key', '');
-        if ($expected === '' || ! hash_equals(hash('sha256', $expected), hash('sha256', $validated['device_key']))) {
+        $storedHash = $this->nodeRepo->getTokenHashByKodeNode($kode);
+
+        $isProvisioningKey = ($expected !== '' && hash_equals(hash('sha256', $expected), hash('sha256', $validated['device_key'])));
+        $isExistingDeviceToken = ($storedHash !== null && hash_equals($storedHash, hash('sha256', $validated['device_key'])));
+
+        if (! $isProvisioningKey && ! $isExistingDeviceToken) {
             return response()->json(['message' => 'Device key tidak valid.'], 401);
         }
 
-        $kode = $validated['device_id'];
-        $role = $validated['device_role'] ?? 'node';
+        // Token unik per-device (blueprint §3.3):
+        // Jika device baru atau mengautentikasi dengan provisioning key, generate token acak unik baru.
+        // Jika device sudah punya token dan hello dengan tokennya sendiri, pertahankan hash lama.
+        $deviceToken = null;
+        if ($storedHash === null || (! $isExistingDeviceToken && $isProvisioningKey)) {
+            $deviceToken = bin2hex(random_bytes(24)); // 48 karakter hex
+            $tokenHash = hash('sha256', $deviceToken);
+        } else {
+            $tokenHash = $storedHash;
+        }
+
         $info = [
             'firmware_version' => $validated['firmware_version'] ?? '1.0.0',
             'hardware_id' => $validated['hardware_id'] ?? null,
             'ip_address' => $validated['ip_address'] ?? $request->ip(),
             'capabilities' => isset($validated['capabilities']) ? array_values($validated['capabilities']) : null,
-            'api_token_hash' => hash('sha256', $validated['device_key']),
+            'api_token_hash' => $tokenHash,
             'last_seen_at' => now(),
         ];
 
@@ -79,11 +97,16 @@ class DeviceLifecycleController extends Controller
                 'status' => 'pending',
             ]));
 
-            return response()->json([
+            $resp = [
                 'status' => 'pending',
                 'message' => 'Menunggu registrasi di dashboard.',
                 'data' => $this->nodeRepo->find($id),
-            ], 202);
+            ];
+            if ($deviceToken !== null) {
+                $resp['device_token'] = $deviceToken;
+            }
+
+            return response()->json($resp, 202);
         }
 
         if (($node['status'] ?? '') === 'inactive') {
@@ -102,22 +125,37 @@ class DeviceLifecycleController extends Controller
                 $node = $this->nodeRepo->find($node['id']);
                 $summary = $this->reconcile->reconcile($node, $node['capabilities'] ?? []);
 
-                return response()->json([
+                $resp = [
                     'status' => 'active',
                     'message' => 'Device terdaftar (pra-registrasi cocok), sensor direkonsiliasi.',
                     'data' => $node,
                     'sensors' => $summary,
-                ]);
+                ];
+                if ($deviceToken !== null) {
+                    $resp['device_token'] = $deviceToken;
+                }
+
+                return response()->json($resp);
             }
 
-            return response()->json([
+            $resp = [
                 'status' => 'pending',
                 'message' => 'Menunggu registrasi di dashboard.',
                 'data' => $node,
-            ], 202);
+            ];
+            if ($deviceToken !== null) {
+                $resp['device_token'] = $deviceToken;
+            }
+
+            return response()->json($resp, 202);
         }
 
-        return response()->json(['status' => 'active', 'data' => $node]);
+        $resp = ['status' => 'active', 'data' => $node];
+        if ($deviceToken !== null) {
+            $resp['device_token'] = $deviceToken;
+        }
+
+        return response()->json($resp);
     }
 
     /**

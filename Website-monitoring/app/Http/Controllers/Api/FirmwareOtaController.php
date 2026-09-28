@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Repositories\FirmwareRepository;
 use App\Repositories\NodeRepository;
 use App\Repositories\OtaUpdateRepository;
+use App\Services\FirmwareSignerService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 
@@ -15,6 +16,7 @@ class FirmwareOtaController extends Controller
         protected FirmwareRepository $firmwareRepo,
         protected OtaUpdateRepository $otaRepo,
         protected NodeRepository $nodeRepo,
+        protected FirmwareSignerService $signer,
     ) {}
 
     public function resolveFirmwarePath(?string $filePath): ?string
@@ -59,7 +61,33 @@ class FirmwareOtaController extends Controller
         $filename = 'firmware_'.time().'_'.preg_replace('/[^a-zA-Z0-9_\-\.]/', '_', $request->input('version')).'.'.$extension;
         $path = $file->storeAs('firmwares', $filename);
         $fullPath = $this->resolveFirmwarePath($path) ?? Storage::disk('local')->path($path);
-        $hash = file_exists($fullPath) ? hash_file('sha256', $fullPath) : null;
+
+        $hash = null;
+        $signature = null;
+        if (file_exists($fullPath)) {
+            // Blueprint susulan simplify-crypto: signing graceful.
+            // required=false (default prototipe): upload TETAP 201 walau key
+            // belum ada — SHA256 tetap dihitung, signature null, firmware
+            // default verifikasi SHA saja. required=true: gagal 500 bila
+            // signing tidak bisa (firmware secure akan menolak tanpa sig).
+            $required = (bool) config('watermonitoring.firmware_signing_required', false);
+            try {
+                if (! $required && ! $this->signer->hasSigningKey()) {
+                    $hash = hash_file('sha256', $fullPath) ?: null;
+                    $signature = null;
+                } else {
+                    $signData = $this->signer->signFile($fullPath);
+                    $hash = $signData['sha256'];
+                    $signature = $signData['signature'];
+                }
+            } catch (\Throwable $e) {
+                if ($required) {
+                    throw $e;
+                }
+                $hash = hash_file('sha256', $fullPath) ?: null;
+                $signature = null;
+            }
+        }
 
         $fw = $this->firmwareRepo->create([
             'version' => $request->input('version'),
@@ -67,6 +95,7 @@ class FirmwareOtaController extends Controller
             'file_path' => $path,
             'file_size' => $file->getSize(),
             'checksum_sha256' => $hash,
+            'signature_ed25519' => $signature,
             'target_device_model' => $request->input('target_device_model', 'ESP32'),
             'changelog' => $request->input('changelog', ''),
             'is_active' => true,
@@ -317,6 +346,8 @@ class FirmwareOtaController extends Controller
             'status' => $pending['status'] ?? 'pending',
             'version' => $fw['version'],
             'checksum' => $fw['checksum_sha256'] ?? '',
+            'signature' => $fw['signature_ed25519'] ?? '',
+            'signature_ed25519' => $fw['signature_ed25519'] ?? '',
             'file_size' => $fw['file_size'] ?? 0,
             'url' => $downloadUrl,
             'download_url' => $downloadUrl,
@@ -339,6 +370,7 @@ class FirmwareOtaController extends Controller
             'Content-Type' => 'application/octet-stream',
             'Content-Disposition' => 'attachment; filename="firmware_'.($fw['version'] ?? 'latest').'.bin"',
             'X-Checksum-SHA256' => $fw['checksum_sha256'] ?? '',
+            'X-Firmware-Signature' => $fw['signature_ed25519'] ?? '',
         ]);
     }
 

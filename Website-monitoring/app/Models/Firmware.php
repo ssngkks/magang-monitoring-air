@@ -17,6 +17,7 @@ class Firmware extends Model
         'file_path',
         'file_size',
         'checksum_sha256',
+        'signature_ed25519',
         'target_device_model',
         'firebase_storage_path',
         'firebase_storage_url',

@@ -26,10 +26,12 @@ Route::middleware(['throttle:ingest'])->group(function () {
     Route::post('/devices/heartbeat', [DeviceLifecycleController::class, 'heartbeat']);
 });
 
-// Public OTA routes (Gateway ESP32 & Web Manifest check)
-Route::get('/firmware/ota/check', [FirmwareOtaController::class, 'checkOta']);
-Route::get('/firmware/ota/download/{id}', [FirmwareOtaController::class, 'downloadFirmware']);
-Route::post('/firmware/ota/status', [FirmwareOtaController::class, 'reportOtaStatus']);
+// OTA routes dilindungi middleware autentikasi device (token per-device) + throttle (blueprint §3.5)
+Route::middleware(['verify.node.token', 'throttle:ingest'])->group(function () {
+    Route::get('/firmware/ota/check', [FirmwareOtaController::class, 'checkOta']);
+    Route::get('/firmware/ota/download/{id}', [FirmwareOtaController::class, 'downloadFirmware']);
+    Route::post('/firmware/ota/status', [FirmwareOtaController::class, 'reportOtaStatus']);
+});
 
 // =========================================================================
 // TEMPLATE AUTH MIDDLEWARE FIREBASE (JANGAN DIHAPUS - UNTUK TEMPLATE PROJEK LAIN)
