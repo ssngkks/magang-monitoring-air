@@ -157,8 +157,7 @@ export function Dashboard() {
   const cards: { title: string; desc: string; counts: Record<NodeStatus, number>; to: string }[] = [
     { title: 'Kualitas Air', desc: 'Agregat pH & kekeruhan semua node', counts: summary.waterQuality, to: '/water-quality' },
     { title: 'Kondisi Lingkungan', desc: 'Agregat suhu & kelembapan semua node', counts: summary.environment, to: '/environment' },
-    { title: 'Status Fisik', desc: 'Agregat getaran & stabilitas semua node', counts: summary.physical, to: '/physical' },
-    { title: 'Kapasitas Tandon', desc: 'Agregat level air semua tandon', counts: summary.tank, to: '/physical' },
+    { title: 'Status Fisik & Kapasitas Tandon', desc: 'Agregat getaran, stabilitas & level air semua node', counts: summary.physical, to: '/physical' },
   ];
 
   return (
@@ -347,8 +346,8 @@ export function Dashboard() {
         </section>
       )}
 
-      {/* ======================= 4 SUMMARY CARDS ======================= */}
-      <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      {/* ======================= 3 SUMMARY CARDS ======================= */}
+      <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
         {cards.map((c) => (
           <button
             key={c.title}
@@ -375,9 +374,6 @@ export function Dashboard() {
             Status Node
           </h3>
           <div className="flex items-center gap-3">
-            <Link to="/nodes" className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap">
-              Monitoring Nodes →
-            </Link>
             <Link to="/devices" className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap">
               Kelola di Perangkat Sensor →
             </Link>

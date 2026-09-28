@@ -190,6 +190,60 @@ class OtaUpdateRepository
         }
     }
 
+    /**
+     * Jumlah riwayat OTA yang mereferensikan firmware — dipakai memblokir
+     * penghapusan firmware agar history tidak ikut hilang (cascade).
+     */
+    public function countForFirmware(string|int $firmwareId): int
+    {
+        try {
+            return (int) OtaUpdate::where('firmware_id', $firmwareId)->count();
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Riwayat deployment OTA (terbaru dulu) — tidak pernah dihapus saat
+     * firmware baru diterapkan. Filter opsional per node / firmware.
+     */
+    public function getHistory(?string $nodeId = null, string|int|null $firmwareId = null, int $perPage = 20): array
+    {
+        try {
+            $query = OtaUpdate::with('firmware:id,version,name')
+                ->orderByDesc('scheduled_at')
+                ->orderByDesc('created_at');
+            if ($nodeId !== null && $nodeId !== '') {
+                $query->where(function ($q) use ($nodeId) {
+                    $q->where('node_id', (string) $nodeId)
+                        ->orWhere('kode_node', (string) $nodeId);
+                });
+            }
+            if ($firmwareId !== null && $firmwareId !== '') {
+                $query->where('firmware_id', $firmwareId);
+            }
+
+            return $query->limit(max(1, min(100, $perPage)))->get()->map(function ($row) {
+                return [
+                    'id' => $row->id,
+                    'node_id' => $row->node_id,
+                    'kode_node' => $row->kode_node,
+                    'firmware_id' => $row->firmware_id,
+                    'firmware_version' => $row->firmware?->version,
+                    'firmware_name' => $row->firmware?->name,
+                    'status' => $row->status,
+                    'progress_percent' => $row->progress_percent,
+                    'error_message' => $row->error_message,
+                    'scheduled_at' => $row->scheduled_at ? $row->scheduled_at->toIso8601String() : null,
+                    'completed_at' => $row->completed_at ? $row->completed_at->toIso8601String() : null,
+                    'created_at' => $row->created_at ? $row->created_at->toIso8601String() : null,
+                ];
+            })->toArray();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
     public function create(array $data): array
     {
         $u = OtaUpdate::create($data);

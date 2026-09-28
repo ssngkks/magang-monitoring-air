@@ -267,12 +267,36 @@ export const api = {
       body: JSON.stringify({ firmware_id: firmwareId, force }),
     }),
   triggerOtaMulti: (firmwareId: string | number, deviceIds: (string | number)[], force = false) =>
-    apiFetch<{ message: string; data: any[]; count: number; skipped?: number; blocked?: { id: string | number; kode_node: string }[]; code?: string }>(`/devices/ota/trigger-multi`, {
+    apiFetch<{ message: string; data: any[]; count: number; skipped?: number; blocked?: { id: string | number; kode_node: string }[]; mismatched?: { id: string | number; kode_node: string }[]; code?: string }>(`/devices/ota/trigger-multi`, {
       method: 'POST',
       body: JSON.stringify({ firmware_id: firmwareId, device_ids: deviceIds, force }),
     }),
   otaStatus: (nodeId: string | number) =>
     apiFetch<{ data: OtaStatusItem | null }>(`/devices/${nodeId}/ota/status`),
+  otaHistory: (params = '') =>
+    apiFetch<{ data: OtaHistoryItem[] }>(
+      `/ota/history${params ? `?${params}` : ''}`,
+    ),
+  downloadFirmware: async (id: string | number): Promise<{ blob: Blob; filename: string }> => {
+    const token = localStorage.getItem('api_token');
+    const headers: Record<string, string> = { Accept: 'application/octet-stream' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch(`${API_BASE}/firmwares/${id}/download`, { headers });
+    if (!res.ok) {
+      let message = `Gagal mengunduh firmware (${res.status})`;
+      try {
+        const err = await res.json();
+        if (err?.message) message = err.message;
+      } catch {
+        /* abaikan — pakai pesan default */
+      }
+      throw new Error(message);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^";]+)"?/);
+    return { blob, filename: match?.[1] || `firmware_${id}.bin` };
+  },
   forceOtaCheck: (nodeId: string | number) =>
     apiFetch<{ message: string; kode_node: string; rtdb_path: string }>(
       `/devices/${nodeId}/ota/force-check`,
@@ -442,11 +466,17 @@ export interface FirmwareItem {
   file_size: number;
   file_size_formatted?: string;
   binary_deleted?: boolean;
+  binary_exists?: boolean;
+  installed_on?: string[];
+  target_nodes?: { kode_node: string; running_version?: string | null; installed: boolean }[];
+  is_latest_for_model?: boolean;
+  repo_status?: string;
   checksum_sha256?: string;
   target_device_model?: string;
   changelog?: string;
   is_active: boolean;
   created_at?: string;
+  updated_at?: string;
   last_flashed_at?: string | null;
   latest_ota?: {
     id: string | number;
@@ -460,6 +490,21 @@ export interface FirmwareItem {
     node_name?: string | null;
     kode_node?: string | null;
   } | null;
+}
+
+export interface OtaHistoryItem {
+  id: string | number;
+  node_id?: string | number | null;
+  kode_node?: string | null;
+  firmware_id: string | number;
+  firmware_version?: string | null;
+  firmware_name?: string | null;
+  status: 'pending' | 'downloading' | 'installing' | 'success' | 'failed';
+  progress_percent: number;
+  error_message?: string | null;
+  scheduled_at?: string | null;
+  completed_at?: string | null;
+  created_at?: string | null;
 }
 
 export interface OtaStatusItem {

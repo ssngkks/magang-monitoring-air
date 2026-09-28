@@ -8,6 +8,7 @@ use App\Repositories\NodeRepository;
 use App\Repositories\OtaUpdateRepository;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class FirmwareOtaController extends Controller
 {
@@ -19,21 +20,9 @@ class FirmwareOtaController extends Controller
 
     public function resolveFirmwarePath(?string $filePath): ?string
     {
-        if (empty($filePath)) {
-            return null;
-        }
-        $candidates = [
-            Storage::disk('local')->path($filePath),
-            storage_path('app/private/'.$filePath),
-            storage_path('app/'.$filePath),
-        ];
-        foreach ($candidates as $p) {
-            if (file_exists($p)) {
-                return $p;
-            }
-        }
-
-        return null;
+        // Delegasi ke repository: kandidat exact + fallback basename untuk
+        // record lama ber-path basi. Satu sumber kebenaran resolusi file.
+        return $this->firmwareRepo->resolveFirmwarePath($filePath);
     }
 
     public function indexFirmwares()
@@ -53,21 +42,34 @@ class FirmwareOtaController extends Controller
             'changelog' => ['nullable', 'string'],
         ]);
 
+        $version = trim((string) $request->input('version'));
+        $targetModel = trim((string) $request->input('target_device_model', 'ESP32')) ?: 'ESP32';
+
+        // Setiap versi permanen per target model: tolak duplikat agar history
+        // tidak tertimpa dan setiap record menunjuk ke file fisiknya sendiri.
+        if ($this->firmwareRepo->versionExistsForModel($version, $targetModel)) {
+            return response()->json([
+                'message' => "Versi {$version} sudah tersimpan untuk model {$targetModel}. Gunakan nomor versi baru.",
+                'errors' => ['version' => ["Versi {$version} sudah ada untuk model {$targetModel}."]],
+            ], 422);
+        }
+
         $file = $request->file('firmware_file');
         $extension = $file->getClientOriginalExtension() ?: 'bin';
 
-        $filename = 'firmware_'.time().'_'.preg_replace('/[^a-zA-Z0-9_\-\.]/', '_', $request->input('version')).'.'.$extension;
+        // Nama file unik per upload (timestamp + random): file lama tidak tertimpa.
+        $filename = 'firmware_'.time().'_'.Str::random(6).'_'.preg_replace('/[^a-zA-Z0-9_\-\.]/', '_', $version).'.'.$extension;
         $path = $file->storeAs('firmwares', $filename);
         $fullPath = $this->resolveFirmwarePath($path) ?? Storage::disk('local')->path($path);
         $hash = file_exists($fullPath) ? hash_file('sha256', $fullPath) : null;
 
         $fw = $this->firmwareRepo->create([
-            'version' => $request->input('version'),
+            'version' => $version,
             'name' => $request->input('name'),
             'file_path' => $path,
             'file_size' => $file->getSize(),
             'checksum_sha256' => $hash,
-            'target_device_model' => $request->input('target_device_model', 'ESP32'),
+            'target_device_model' => $targetModel,
             'changelog' => $request->input('changelog', ''),
             'is_active' => true,
         ]);
@@ -80,12 +82,80 @@ class FirmwareOtaController extends Controller
 
     public function deleteFirmware($id)
     {
+        $firmware = $this->firmwareRepo->find($id);
+        if (! $firmware) {
+            return response()->json(['message' => 'Firmware tidak ditemukan atau gagal dihapus.'], 404);
+        }
+
+        // Lindungi firmware terpasang & riwayat OTA: blokir total, tanpa validasi longgar.
+        $installedOn = $this->firmwareRepo->findInstalledNodes($firmware['version'] ?? '');
+        if (! empty($installedOn)) {
+            return response()->json([
+                'message' => 'Firmware '.$firmware['version'].' sedang terpasang di '.implode(', ', $installedOn).' — tidak dapat dihapus.',
+            ], 422);
+        }
+        $refCount = $this->otaRepo->countForFirmware($firmware['id']);
+        if ($refCount > 0) {
+            return response()->json([
+                'message' => "Firmware {$firmware['version']} memiliki {$refCount} riwayat OTA — tidak dapat dihapus agar history tetap ada.",
+            ], 422);
+        }
+
         $deleted = $this->firmwareRepo->delete($id);
         if (! $deleted) {
             return response()->json(['message' => 'Firmware tidak ditemukan atau gagal dihapus.'], 404);
         }
 
         return response()->json(['message' => 'Firmware berhasil dihapus dari database dan storage.']);
+    }
+
+    /**
+     * Download FILE ASLI firmware versi tertentu untuk UI web (auth).
+     * Mengambil file berdasarkan firmware_id/path record tersebut — bukan
+     * file versi terbaru. Route ESP32 publik tidak berubah.
+     * GET /api/firmwares/{id}/download
+     */
+    public function downloadFirmwareFile($id)
+    {
+        $fw = $this->firmwareRepo->find($id);
+        if (! $fw) {
+            return response()->json(['message' => 'Firmware tidak ditemukan.'], 404);
+        }
+
+        $path = $this->resolveFirmwarePath($fw['file_path'] ?? null);
+        if (! $path) {
+            return response()->json(['message' => 'File firmware v'.($fw['version'] ?? '').' tidak ditemukan di storage server (mungkin sudah dihapus).'], 404);
+        }
+
+        $ext = pathinfo((string) ($fw['file_path'] ?? ''), PATHINFO_EXTENSION) ?: 'bin';
+        $filename = 'firmware_'.preg_replace('/[^a-zA-Z0-9_\-\.]/', '_', (string) ($fw['version'] ?? 'latest')).'.'.$ext;
+
+        return response()->download($path, $filename, [
+            'Content-Type' => 'application/octet-stream',
+            'X-Checksum-SHA256' => $fw['checksum_sha256'] ?? '',
+        ]);
+    }
+
+    /**
+     * Riwayat deployment OTA (terbaru dulu) — tidak dihapus saat firmware
+     * baru diterapkan. Filter opsional: ?node_id= &firmware_id= &per_page=
+     * GET /api/ota/history
+     */
+    public function otaHistory(Request $request)
+    {
+        $validated = $request->validate([
+            'node_id' => ['nullable', 'string', 'max:100'],
+            'firmware_id' => ['nullable'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+        ]);
+
+        $history = $this->otaRepo->getHistory(
+            $validated['node_id'] ?? null,
+            $validated['firmware_id'] ?? null,
+            (int) ($validated['per_page'] ?? 20)
+        );
+
+        return response()->json(['data' => $history]);
     }
 
     public function updateFirmware(Request $request, $id)
@@ -123,6 +193,15 @@ class FirmwareOtaController extends Controller
 
         $node = $this->nodeRepo->find($nodeId);
         $kodeNode = $node['kode_node'] ?? (string) $nodeId;
+
+        // Target model: firmware Gateway tidak boleh dikirim ke Node Sensor
+        // (dan sebaliknya) bila kedua sisi modelnya jelas dan berbeda.
+        if ($this->isModelMismatch($firmware['target_device_model'] ?? null, $node['model_type'] ?? null)) {
+            return response()->json([
+                'message' => 'Firmware v'.($firmware['version'] ?? '').' untuk model '.($firmware['target_device_model'] ?? '-').' tidak cocok dengan perangkat '.$kodeNode.' (model '.($node['model_type'] ?? '-').').',
+                'code' => 'model_mismatch',
+            ], 422);
+        }
 
         // Blokir jebakan label: versi sama dengan yang berjalan akan di-skip device.
         // Paksa hanya via force:true (kasus curiga flash corrupt).
@@ -188,6 +267,7 @@ class FirmwareOtaController extends Controller
         $createdUpdates = [];
         $skipped = 0;
         $blocked = [];
+        $mismatched = [];
         $force = (bool) ($validated['force'] ?? false);
 
         foreach ($validated['device_ids'] as $nodeId) {
@@ -196,6 +276,16 @@ class FirmwareOtaController extends Controller
                 continue;
             }
             $kodeNode = $node['kode_node'] ?? $nodeId;
+
+            if ($this->isModelMismatch($firmware['target_device_model'] ?? null, $node['model_type'] ?? null)) {
+                $mismatched[] = [
+                    'id' => $node['id'],
+                    'kode_node' => $kodeNode,
+                    'model_type' => $node['model_type'] ?? null,
+                ];
+
+                continue;
+            }
 
             if (! $force && $this->isSameVersion($firmware['version'] ?? '', $node['firmware_version'] ?? '')) {
                 $blocked[] = [
@@ -242,6 +332,9 @@ class FirmwareOtaController extends Controller
         if (! empty($blocked)) {
             $message .= ' '.count($blocked).' perangkat dilewati (sudah versi ini).';
         }
+        if (! empty($mismatched)) {
+            $message .= ' '.count($mismatched).' perangkat dilewati (model tidak cocok).';
+        }
 
         return response()->json([
             'message' => $message,
@@ -249,7 +342,28 @@ class FirmwareOtaController extends Controller
             'count' => count($createdUpdates),
             'skipped' => $skipped,
             'blocked' => $blocked,
+            'mismatched' => $mismatched,
         ]);
+    }
+
+    /**
+     * True bila target model firmware jelas bertentangan dengan model node.
+     * 'ESP32' adalah nilai default generik platform (bukan model spesifik),
+     * sehingga diperlakukan sebagai wildcard — sama seperti string kosong /
+     * 'all'. Hanya pasangan spesifik-vs-spesifik yang berbeda yang diblokir.
+     */
+    protected function isModelMismatch(?string $firmwareModel, ?string $nodeModel): bool
+    {
+        $fw = strtolower(trim((string) $firmwareModel));
+        $nd = strtolower(trim((string) $nodeModel));
+        if ($fw === '' || $fw === 'esp32' || $fw === 'all') {
+            return false;
+        }
+        if ($nd === '' || $nd === 'esp32') {
+            return false;
+        }
+
+        return $fw !== $nd;
     }
 
     /**

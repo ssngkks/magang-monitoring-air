@@ -6,7 +6,6 @@ import { api } from '../lib/api';
 import { NodeProvider } from '../context/NodeContext';
 import {
   LayoutDashboard,
-  Activity,
   Brain,
   Bell,
   FileText,
@@ -313,7 +312,6 @@ export function Layout() {
   ========================= */
   const menuItems = [
     { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
-    { path: '/nodes', icon: Activity, label: 'Monitoring Nodes' },
     { path: '/ai-analytics', icon: Brain, label: t.nav.aiAnalytics },
     { path: '/devices', icon: Cpu, label: 'Perangkat & Sensor' },
     { path: '/alerts', icon: Bell, label: t.nav.alerts },
