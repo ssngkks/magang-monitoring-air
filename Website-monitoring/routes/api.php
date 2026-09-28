@@ -96,8 +96,12 @@ Route::group(['middleware' => $authMiddleware], function () {
     // Firmware Repository & OTA Management
     Route::get('/firmwares', [FirmwareOtaController::class, 'indexFirmwares']);
     Route::post('/firmwares', [FirmwareOtaController::class, 'uploadFirmware']);
+    Route::get('/firmwares/{id}/download', [FirmwareOtaController::class, 'downloadFirmwareFile']);
     Route::put('/firmwares/{id}', [FirmwareOtaController::class, 'updateFirmware']);
     Route::delete('/firmwares/{id}', [FirmwareOtaController::class, 'deleteFirmware']);
+
+    // Riwayat deployment OTA (terbaru dulu, tak pernah dihapus upload baru)
+    Route::get('/ota/history', [FirmwareOtaController::class, 'otaHistory']);
 
     Route::post('/devices/{nodeId}/ota/trigger', [FirmwareOtaController::class, 'triggerOta']);
     Route::post('/devices/ota/trigger-multi', [FirmwareOtaController::class, 'triggerOtaMulti']);

@@ -24,16 +24,25 @@ class AlertController extends Controller
         $request->validate([
             'per_page' => ['nullable', 'integer', 'min:1', 'max:200'],
             'is_read' => ['nullable', 'boolean'],
+            'node_id' => ['nullable', 'string', 'max:100'],
         ]);
 
         $isRead = $request->has('is_read') ? $request->boolean('is_read') : null;
         $perPage = $request->integer('per_page', 25);
+        $nodeId = $request->input('node_id');
 
-        // Cache daftar alert user selama 3 detik untuk respons instan
-        $cacheKey = "alerts_{$userId}_".($isRead === null ? 'all' : ($isRead ? 'read' : 'unread'))."_{$perPage}";
-        $alerts = Cache::remember($cacheKey, 3, function () use ($userId, $isRead, $perPage) {
-            return $this->alertRepo->getByUserId($userId, $isRead, $perPage);
-        });
+        if ($nodeId !== null && $nodeId !== '') {
+            // Filter node dikerjakan server-side. Sengaja tanpa cache karena
+            // invalidasi cache per-node tidak dapat dienumerasi dengan aman;
+            // query ringan (order + limit) sehingga direct call dapat diterima.
+            $alerts = $this->alertRepo->getByNodeId($nodeId, $isRead, $perPage);
+        } else {
+            // Cache daftar alert user selama 3 detik untuk respons instan
+            $cacheKey = "alerts_{$userId}_".($isRead === null ? 'all' : ($isRead ? 'read' : 'unread'))."_{$perPage}";
+            $alerts = Cache::remember($cacheKey, 3, function () use ($userId, $isRead, $perPage) {
+                return $this->alertRepo->getByUserId($userId, $isRead, $perPage);
+            });
+        }
 
         // Preload nodes milik user dengan cache 30 detik untuk menghindari query berulang
         $userNodes = Cache::remember("user_nodes_{$userId}", 30, function () use ($userId) {
@@ -101,7 +110,11 @@ class AlertController extends Controller
     {
         $userId = (string) (Auth::id() ?? $request->attributes->get('firebase_uid'));
 
-        $count = $this->alertRepo->markAllAsRead();
+        $request->validate([
+            'node_id' => ['nullable', 'string', 'max:100'],
+        ]);
+
+        $count = $this->alertRepo->markAllAsRead($request->input('node_id'));
 
         $this->forgetAlertsCache($userId);
 

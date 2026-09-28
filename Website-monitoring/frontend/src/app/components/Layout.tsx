@@ -3,6 +3,7 @@ import { Outlet, useNavigate, useLocation, NavLink } from 'react-router';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import { api } from '../lib/api';
+import { NodeProvider } from '../context/NodeContext';
 import {
   LayoutDashboard,
   Brain,
@@ -695,7 +696,9 @@ export function Layout() {
         </header>
 
         <main className="flex-1 overflow-y-auto overflow-x-hidden bg-gray-50 dark:bg-gray-950 min-w-0">
-          <Outlet />
+          <NodeProvider>
+            <Outlet />
+          </NodeProvider>
         </main>
 
       </div>

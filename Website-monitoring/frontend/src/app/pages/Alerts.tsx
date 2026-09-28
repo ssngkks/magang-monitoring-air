@@ -1,10 +1,15 @@
-import { useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle, Info, XCircle, X, Filter, Search, Download, Check, Bell, RefreshCw } from 'lucide-react';
+import { useEffect, useState, useCallback } from 'react';
+import { Link } from 'react-router';
+import { AlertTriangle, CheckCircle, XCircle, X, Filter, Search, Download, Check, Bell, RefreshCw } from 'lucide-react';
 import { api, AlertData } from '../lib/api';
+import { useNode } from '../context/NodeContext';
+import { getNodeCode } from '../lib/nodes';
 
 interface SystemAlert {
   id: string;
   backendId?: string | number;
+  nodeId?: string | number | null;
+  nodeKode?: string;
   type: 'critical' | 'warning' | 'info';
   message: string;
   location: string;
@@ -24,11 +29,21 @@ export function Alerts() {
   const [lastSyncTime, setLastSyncTime] = useState<string>('');
 
   const [markingAll, setMarkingAll] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
-  const loadAlerts = async (isManual = false) => {
+  // Node aktif global — daftar alert selalu mengikuti node ini (filter server-side).
+  const { selectedNode, selectedNodeId } = useNode();
+
+  const loadAlerts = useCallback(async (isManual = false) => {
+    if (!selectedNodeId) {
+      setAlerts([]);
+      setLoading(false);
+      return;
+    }
     if (isManual) setIsRefreshing(true);
     try {
-      const response = await api.alerts('per_page=200');
+      setFetchError(null);
+      const response = await api.alerts(`node_id=${encodeURIComponent(String(selectedNodeId))}&per_page=200`);
       const mapped: SystemAlert[] = (response.data || []).map((item: AlertData) => {
         const isCrit = item.severity === 'critical';
         const createdDate = item.created_at ? new Date(item.created_at) : new Date();
@@ -36,6 +51,8 @@ export function Alerts() {
         return {
           id: String(item.id),
           backendId: item.id,
+          nodeId: item.node_id ?? selectedNodeId,
+          nodeKode: item.node?.kode_node ?? '',
           type: isCrit ? 'critical' : 'warning',
           message: item.pesan || 'Peringatan kondisi sensor terdeteksi',
           location: item.node?.nama_lokasi
@@ -67,20 +84,21 @@ export function Alerts() {
       window.dispatchEvent(
         new CustomEvent('alerts-updated', { detail: { unreadCount } })
       );
-    } catch (error) {
+    } catch (error: any) {
       console.error('Gagal mengambil daftar peringatan:', error);
       setAlerts([]);
+      setFetchError(error?.message || 'Gagal memuat alert.');
     } finally {
       setLoading(false);
       setIsRefreshing(false);
     }
-  };
+  }, [selectedNodeId]);
 
   useEffect(() => {
     loadAlerts();
     const interval = setInterval(loadAlerts, 15000); // Polling tiap 15 detik
     return () => clearInterval(interval);
-  }, []);
+  }, [loadAlerts]);
 
   const handleMarkAsRead = async (alertId: string, backendId?: string | number) => {
     try {
@@ -118,7 +136,7 @@ export function Alerts() {
       new CustomEvent('alerts-updated', { detail: { unreadCount: 0 } })
     );
     try {
-      await api.markAllAlertsRead();
+      await api.markAllAlertsRead(selectedNodeId ?? undefined);
     } catch (err) {
       console.error('Gagal menandai seluruh alert sebagai dibaca:', err);
       loadAlerts();
@@ -168,6 +186,8 @@ export function Alerts() {
 
   const stats = {
     total: alerts.length,
+    active: alerts.filter((a) => !a.isRead).length,
+    resolved: alerts.filter((a) => a.isRead).length,
     critical: alerts.filter((a) => a.type === 'critical').length,
     warning: alerts.filter((a) => a.type === 'warning').length,
     unread: alerts.filter((a) => !a.isRead).length,
@@ -184,6 +204,11 @@ export function Alerts() {
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
             Pantau kondisi anomali sensor air dan kelola notifikasi secara real-time
           </p>
+          {selectedNode && (
+            <p className="text-xs font-mono text-gray-600 dark:text-gray-300 mt-1">
+              Menampilkan alert untuk node aktif: <strong>{getNodeCode(selectedNode)}</strong>
+            </p>
+          )}
           {lastSyncTime && (
             <p className="text-xs font-mono text-gray-500 dark:text-gray-400 mt-1">
               Terakhir sinkronisasi: <span className="font-semibold text-gray-700 dark:text-gray-300">{lastSyncTime}</span>
@@ -217,12 +242,12 @@ export function Alerts() {
           <p className="mt-1 text-2xl font-bold text-red-600 dark:text-red-400">{stats.critical}</p>
         </div>
         <div className="rounded-xl border border-yellow-200 bg-yellow-50 p-4 shadow-sm dark:border-yellow-900/50 dark:bg-yellow-950/40">
-          <p className="text-xs font-medium text-yellow-700 dark:text-yellow-400">Peringatan / Warning</p>
-          <p className="mt-1 text-2xl font-bold text-yellow-600 dark:text-yellow-400">{stats.warning}</p>
+          <p className="text-xs font-medium text-yellow-700 dark:text-yellow-400">Aktif</p>
+          <p className="mt-1 text-2xl font-bold text-yellow-600 dark:text-yellow-400">{stats.active}</p>
         </div>
         <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 shadow-sm dark:border-blue-900/50 dark:bg-blue-950/40">
-          <p className="text-xs font-medium text-blue-700 dark:text-blue-400">Belum Dibaca</p>
-          <p className="mt-1 text-2xl font-bold text-blue-600 dark:text-blue-400">{stats.unread}</p>
+          <p className="text-xs font-medium text-blue-700 dark:text-blue-400">Selesai Dibaca</p>
+          <p className="mt-1 text-2xl font-bold text-blue-600 dark:text-blue-400">{stats.resolved}</p>
         </div>
       </div>
 
@@ -307,6 +332,12 @@ export function Alerts() {
 
       {/* Daftar Peringatan */}
       <div className="space-y-3">
+        {fetchError && !loading && (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-center text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
+            Gagal memuat alert: {fetchError}
+            <p className="mt-1 text-[11px] font-mono opacity-80">Endpoint: GET /api/alerts?node_id=…</p>
+          </div>
+        )}
         {loading ? (
           <div className="rounded-xl border border-gray-200 bg-white p-12 text-center dark:border-gray-800 dark:bg-gray-900">
             <p className="text-sm font-medium text-gray-500 animate-pulse">Memuat daftar peringatan...</p>
@@ -318,7 +349,7 @@ export function Alerts() {
               Tidak Ada Peringatan
             </p>
             <p className="text-xs text-gray-500 mt-1">
-              Seluruh parameter sensor air berada dalam rentang ambang batas aman.
+              Tidak ada alert untuk node ini pada periode yang dipilih.
             </p>
           </div>
         ) : (
@@ -442,6 +473,12 @@ export function Alerts() {
             </div>
 
             <div className="mt-6 flex justify-end gap-2">
+              <Link
+                to={`/reports?node=${selectedAlert.nodeId ?? selectedNodeId ?? ''}`}
+                className="rounded-lg border border-blue-600 px-4 py-2 text-xs font-semibold text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/40"
+              >
+                Lihat History
+              </Link>
               {!selectedAlert.isRead && (
                 <button
                   onClick={() => {

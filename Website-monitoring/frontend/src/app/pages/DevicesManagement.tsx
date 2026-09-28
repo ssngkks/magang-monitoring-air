@@ -32,9 +32,10 @@ import {
   CheckSquare,
   Square,
   Users,
-  HardDrive,
   Info,
   ArrowLeft,
+  Download,
+  History,
 } from 'lucide-react';
 import {
   api,
@@ -45,6 +46,7 @@ import {
   SensorItem,
   SensorTypeItem,
   FirmwareItem,
+  OtaHistoryItem,
   OtaStatusItem,
 } from '../lib/api';
 import { ActionFeedbackModal, ActionFeedbackStatus } from '../components/ActionFeedbackModal';
@@ -121,6 +123,37 @@ export function DevicesManagement() {
   const [upgradeSelectedDeviceIds, setUpgradeSelectedDeviceIds] = useState<string[]>([]);
   const [upgradeSearchQuery, setUpgradeSearchQuery] = useState<string>('');
   const [isUpgradingFromRepo, setIsUpgradingFromRepo] = useState(false);
+  // Mode rollback: modal yang sama dipakai memilih target downgrade + konfirmasi
+  const [isRollbackMode, setIsRollbackMode] = useState(false);
+  // Riwayat deployment OTA (tidak hilang saat firmware baru diterapkan)
+  const [otaHistory, setOtaHistory] = useState<OtaHistoryItem[]>([]);
+  const [otaHistoryLoading, setOtaHistoryLoading] = useState(false);
+
+  /** Normalisasi label versi: samakan "v1.0.2" dengan "1.0.2". */
+  const normalizeFwVersion = (v: unknown): string => {
+    const s = String(v ?? '').trim();
+    return (s.startsWith('v') || s.startsWith('V') ? s.slice(1) : s).trim();
+  };
+
+  /** Badge warna untuk status repository firmware (sumber: backend). */
+  const repoStatusBadgeClass = (status?: string | null): string => {
+    switch (status) {
+      case 'Terpasang':
+        return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300';
+      case 'Tersedia':
+        return 'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-300';
+      case 'Versi Lama':
+        return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400';
+      case 'Menunggu':
+        return 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300';
+      case 'Flashing':
+        return 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300';
+      case 'Gagal':
+        return 'bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300';
+      default:
+        return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400';
+    }
+  };
 
   // Upload Firmware Multi-Device Selection
   const [uploadFirmwareTargetDevices, setUploadFirmwareTargetDevices] = useState<string[]>([]);
@@ -258,6 +291,7 @@ export function DevicesManagement() {
     setIsUpgradeModalOpen(false);
     setTargetFirmwareForUpgrade(null);
     setUpgradeFromUpload(false);
+    setIsRollbackMode(false);
   };
 
   // Global ESC Key Listener (Tugas 3b)
@@ -320,13 +354,15 @@ export function DevicesManagement() {
   const loadData = async (isSilent = false) => {
     try {
       if (!isSilent) setLoading(true);
-      const [devRes, locRes, typesRes, firmRes, devTypesRes, pendRes] = await Promise.all([
+      if (!isSilent) setOtaHistoryLoading(true);
+      const [devRes, locRes, typesRes, firmRes, devTypesRes, pendRes, histRes] = await Promise.all([
         api.devices().catch(() => ({ data: [] })),
         api.locations().catch(() => ({ data: [] })),
         api.sensorTypes().catch(() => ({ data: [] })),
         api.firmwares().catch(() => ({ data: [] })),
         api.deviceTypes().catch(() => ({ data: [] })),
         api.pendingDevices().catch(() => ({ data: [] })),
+        api.otaHistory('per_page=20').catch(() => ({ data: [] })),
       ]);
 
       setDevices(devRes.data || []);
@@ -335,6 +371,8 @@ export function DevicesManagement() {
       setFirmwares(firmRes.data || []);
       setDeviceTypes(devTypesRes.data || []);
       setPendingDevices(pendRes.data || []);
+      setOtaHistory(histRes.data || []);
+      setOtaHistoryLoading(false);
       setLastSyncTime(new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     } catch (e) {
       console.error('Gagal memuat data manajemen perangkat:', e);
@@ -918,7 +956,26 @@ export function DevicesManagement() {
     }
   };
 
+  const handleDownloadFirmware = async (fw: FirmwareItem) => {
+    showFeedback('loading', 'Mengunduh Firmware...', `Mengambil file asli firmware v${fw.version} dari server...`);
+    try {
+      const { blob, filename } = await api.downloadFirmware(fw.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      showFeedback('success', 'Berhasil', `File asli firmware v${fw.version} (${filename}) berhasil diunduh.`);
+    } catch (err: any) {
+      showFeedback('error', 'Gagal Mengunduh', err.message || 'Gagal mengunduh file firmware.');
+    }
+  };
+
   const handleOpenUpgradeFromRepo = (fw: FirmwareItem) => {
+    setIsRollbackMode(false);
     setTargetFirmwareForUpgrade(fw);
     // Bila firmware ini baru saja diunggah, pakai pilihan perangkat saat unggah
     // (tidak perlu pilih ulang). Selain itu isi-otomatis berdasarkan kecocokan model.
@@ -969,10 +1026,15 @@ export function DevicesManagement() {
         showFeedback('success', 'Sebagian Dilewati', `${res.blocked.length} perangkat sudah versi ini: ${res.blocked.map((b) => b.kode_node).join(', ')}.`);
       }
 
+      if (res.mismatched && res.mismatched.length > 0) {
+        showFeedback('success', 'Sebagian Dilewati', `${res.mismatched.length} perangkat dilewati (model tidak cocok): ${res.mismatched.map((b) => b.kode_node).join(', ')}.`);
+      }
+
       setIsUpgradeModalOpen(false);
       setTargetFirmwareForUpgrade(null);
       setUpgradeSelectedDeviceIds([]);
       setUpgradeFromUpload(false);
+      setIsRollbackMode(false);
       loadData();
     } catch (err: any) {
       // Blokir label-sama: tawarkan paksa flash ulang (kasus curiga flash corrupt).
@@ -989,6 +1051,42 @@ export function DevicesManagement() {
       setIsUpgradingFromRepo(false);
     }
   };
+
+  /**
+   * Rollback/downgrade ASLI: memakai file biner firmware lama yang dipilih
+   * sebagai source OTA (via trigger multi-device existing) — bukan ganti label.
+   * Konfirmasi dilakukan di modal sebelum eksekusi.
+   */
+  const handleOpenRollback = (fw: FirmwareItem) => {
+    setIsRollbackMode(true);
+    setTargetFirmwareForUpgrade(fw);
+    const targetModel = (fw.target_device_model || '').toLowerCase();
+    const targetNorm = normalizeFwVersion(fw.version);
+    const candidates = devices
+      .filter((d) => {
+        if (targetModel && targetModel !== 'esp32' && targetModel !== 'all') {
+          if ((d.model_type || '').toLowerCase() !== targetModel) return false;
+        }
+        return normalizeFwVersion(d.firmware_version) !== targetNorm;
+      })
+      .map((d) => String(d.id));
+    setUpgradeSelectedDeviceIds(candidates);
+    setUpgradeFromUpload(false);
+    setUpgradeSearchQuery('');
+    setIsUpgradeModalOpen(true);
+  };
+
+  /** Ada perangkat yang versinya berbeda (kandidat upgrade/rollback). */
+  const hasVersionDrift = (fw: FirmwareItem): boolean => {
+    const targetNorm = normalizeFwVersion(fw.version);
+    return devices.some((d) => normalizeFwVersion(d.firmware_version) !== targetNorm);
+  };
+
+  /** Tampilkan tombol Rollback bila ada perangkat yang versinya berbeda. */
+  const canRollbackFirmware = (fw: FirmwareItem): boolean => hasVersionDrift(fw);
+
+  /** File biner tersedia untuk di-download (tanpa badge, tanpa file palsu). */
+  const isFileAvailable = (fw: FirmwareItem): boolean => fw.binary_exists !== false && !fw.binary_deleted;
 
   const handleOpenEditFirmware = (fw: FirmwareItem) => {
     setEditingFirmware(fw);
@@ -1764,9 +1862,11 @@ export function DevicesManagement() {
                 <thead className="bg-gray-50 dark:bg-gray-800/80 text-gray-500 font-semibold border-b border-gray-100 dark:border-gray-800 sticky top-0 z-10">
                   <tr>
                     <th className="px-4 py-3.5">Versi & Nama</th>
+                    <th className="px-4 py-3.5">Target Model</th>
+                    <th className="px-4 py-3.5">Target Perangkat</th>
                     <th className="px-4 py-3.5">Status OTA / Penyebaran</th>
-                    <th className="px-4 py-3.5">Target Model (Jenis)</th>
                     <th className="px-4 py-3.5">Ukuran File Asli</th>
+                    <th className="px-4 py-3.5">Tanggal Upload</th>
                     <th className="px-4 py-3.5">Changelog</th>
                     <th className="px-4 py-3.5 text-right">Aksi</th>
                   </tr>
@@ -1774,7 +1874,7 @@ export function DevicesManagement() {
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                   {firmwares.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-4 py-12 text-center text-gray-500">
+                      <td colSpan={8} className="px-4 py-12 text-center text-gray-500">
                         Belum ada file firmware tersimpan. Klik "Unggah Firmware .bin" untuk menambahkan firmware baru.
                       </td>
                     </tr>
@@ -1784,10 +1884,42 @@ export function DevicesManagement() {
                         <td className="px-4 py-3.5">
                           <div className="font-mono font-bold text-blue-600 dark:text-blue-400 text-sm">{fw.version}</div>
                           <div className="font-semibold text-gray-900 dark:text-white mt-0.5">{fw.name}</div>
-                          {fw.file_path && (
-                            <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
-                              <HardDrive className="w-2.5 h-2.5" /> Biner Tersedia di Server
-                            </span>
+                          <div className="flex flex-wrap items-center gap-1 mt-1">
+                            {fw.repo_status && (
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${repoStatusBadgeClass(fw.repo_status)}`}>
+                                {fw.repo_status}
+                              </span>
+                            )}
+                          </div>
+                          {(fw.installed_on?.length ?? 0) > 0 && (
+                            <div className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1">
+                              Terpasang di: <span className="font-mono font-semibold">{(fw.installed_on || []).join(', ')}</span>
+                            </div>
+                          )}
+                        </td>
+
+                        <td className="px-4 py-3.5">
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900/50">
+                            {fw.target_device_model || 'Semua Jenis'}
+                          </span>
+                        </td>
+
+                        <td className="px-4 py-3.5">
+                          {(fw.target_nodes?.length ?? 0) > 0 ? (
+                            <div className="space-y-1">
+                              {(fw.target_nodes || []).map((t) => (
+                                <div key={t.kode_node} className="flex items-center gap-1.5">
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-mono font-bold bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                                    {t.kode_node}
+                                  </span>
+                                  <span className={`text-[10px] font-mono ${t.installed ? 'text-emerald-600 dark:text-emerald-400 font-bold' : 'text-gray-400'}`} title={t.installed ? 'Firmware ini terpasang di perangkat tersebut' : `Berjalan: ${t.running_version || '?'}`}>
+                                    FW {t.running_version || '?'}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-gray-400">-</span>
                           )}
                         </td>
 
@@ -1855,14 +1987,12 @@ export function DevicesManagement() {
                           )}
                         </td>
 
-                        <td className="px-4 py-3.5">
-                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900/50">
-                            {fw.target_device_model || 'Semua Jenis'}
-                          </span>
-                        </td>
-
                         <td className="px-4 py-3.5 font-mono text-gray-600 dark:text-gray-300 font-medium">
                           {fw.file_size_formatted || `${(fw.file_size / 1024).toFixed(1)} KB`}
+                        </td>
+
+                        <td className="px-4 py-3.5 text-gray-600 dark:text-gray-300 whitespace-nowrap">
+                          {fw.created_at ? formatDateTime(fw.created_at) : '-'}
                         </td>
 
                         <td className="px-4 py-3.5 text-gray-500 max-w-xs truncate">{fw.changelog || '-'}</td>
@@ -1871,12 +2001,33 @@ export function DevicesManagement() {
                           <div className="flex items-center justify-end gap-1.5">
                             <button
                               type="button"
-                              onClick={() => handleOpenUpgradeFromRepo(fw)}
-                              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition cursor-pointer"
-                              title="Terapkan dan upgrade firmware ini ke multi-perangkat"
+                              onClick={() => handleDownloadFirmware(fw)}
+                              disabled={!isFileAvailable(fw)}
+                              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                              title={isFileAvailable(fw) ? `Download file asli firmware v${fw.version}` : 'File tidak tersedia di server'}
                             >
-                              <Zap className="w-3.5 h-3.5 text-amber-300" /> Upgrade
+                              <Download className="w-3.5 h-3.5" /> Download
                             </button>
+                            {(fw.is_latest_for_model ?? true) && (hasVersionDrift(fw) || devices.length === 0) && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenUpgradeFromRepo(fw)}
+                                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition cursor-pointer"
+                                title="Terapkan dan upgrade firmware ini ke multi-perangkat"
+                              >
+                                <Zap className="w-3.5 h-3.5 text-amber-300" /> Upgrade
+                              </button>
+                            )}
+                            {!(fw.is_latest_for_model ?? true) && isFileAvailable(fw) && (canRollbackFirmware(fw) || devices.length === 0) && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenRollback(fw)}
+                                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-xs transition cursor-pointer"
+                                title={`Rollback perangkat ke firmware v${fw.version}`}
+                              >
+                                <History className="w-3.5 h-3.5" /> Rollback
+                              </button>
+                            )}
 
                             <button
                               type="button"
@@ -1890,12 +2041,86 @@ export function DevicesManagement() {
                             <button
                               type="button"
                               onClick={() => handleDeleteFirmware(fw)}
-                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition cursor-pointer"
-                              title="Hapus firmware"
+                              disabled={(fw.installed_on?.length ?? 0) > 0 || !!fw.latest_ota}
+                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-gray-400 disabled:hover:bg-transparent"
+                              title={(fw.installed_on?.length ?? 0) > 0
+                                ? `Terpasang di ${(fw.installed_on || []).join(', ')} — tidak dapat dihapus`
+                                : fw.latest_ota
+                                  ? 'Memiliki riwayat OTA — tidak dapat dihapus'
+                                  : 'Hapus firmware'}
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
                           </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Riwayat Deploy OTA — tercatat permanen, tak hilang saat firmware baru diterapkan */}
+          <div className="rounded-3xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 shadow-xs overflow-hidden">
+            <div className="p-5 pb-1 flex items-center gap-2">
+              <History className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+              <h3 className="text-base font-bold text-gray-900 dark:text-white">
+                Riwayat Deploy OTA
+              </h3>
+            </div>
+            <p className="px-5 text-xs text-gray-500 dark:text-gray-400">
+              Setiap proses OTA tercatat permanen — tidak dihapus ketika firmware baru diterapkan.
+            </p>
+            <div className="overflow-x-auto max-h-[320px] overflow-y-auto mt-3">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-gray-50 dark:bg-gray-800/80 text-gray-500 font-semibold border-y border-gray-100 dark:border-gray-800 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-4 py-3">Waktu</th>
+                    <th className="px-4 py-3">Perangkat</th>
+                    <th className="px-4 py-3">Firmware</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Hasil</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {otaHistoryLoading ? (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-8 text-center text-gray-500">Memuat riwayat...</td>
+                    </tr>
+                  ) : otaHistory.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-8 text-center text-gray-500">Belum ada riwayat deployment OTA.</td>
+                    </tr>
+                  ) : (
+                    otaHistory.map((h) => (
+                      <tr key={h.id} className="hover:bg-gray-50/50 dark:hover:bg-gray-800/40 transition-colors">
+                        <td className="px-4 py-3 text-gray-600 dark:text-gray-300 whitespace-nowrap">
+                          {formatDateTime(h.completed_at || h.scheduled_at || h.created_at)}
+                        </td>
+                        <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-white">
+                          {h.kode_node || h.node_id || '-'}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-blue-600 dark:text-blue-400 font-semibold">
+                          v{h.firmware_version || '?'}
+                        </td>
+                        <td className="px-4 py-3">
+                          {h.status === 'success' ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">Selesai (100%)</span>
+                          ) : h.status === 'failed' ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300">Gagal</span>
+                          ) : h.status === 'pending' ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">Menunggu</span>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-300">Flashing ({h.progress_percent}%)</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-gray-500 dark:text-gray-400 max-w-xs truncate">
+                          {h.status === 'failed'
+                            ? (h.error_message || 'Gagal tanpa keterangan')
+                            : h.status === 'success'
+                              ? `OTA selesai (${h.progress_percent || 100}%)`
+                              : `Progres ${h.progress_percent || 0}%`}
                         </td>
                       </tr>
                     ))
@@ -3308,11 +3533,19 @@ export function DevicesManagement() {
               <X className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 mb-2 pr-8">
-              <Zap className="w-5 h-5 text-amber-400 fill-amber-400" />
+              {isRollbackMode
+                ? <History className="w-5 h-5 text-amber-500" />
+                : <Zap className="w-5 h-5 text-amber-400 fill-amber-400" />}
               <h3 className="text-base font-bold text-gray-900 dark:text-white">
-                Upgrade Firmware v{targetFirmwareForUpgrade.version}
+                {isRollbackMode ? 'Rollback' : 'Upgrade'} Firmware v{targetFirmwareForUpgrade.version}
               </h3>
             </div>
+            {isRollbackMode && (
+              <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 text-xs text-amber-800 dark:text-amber-200 mb-3 leading-relaxed">
+                Rollback memakai <strong>file asli v{targetFirmwareForUpgrade.version}</strong> sebagai source OTA
+                (bukan ganti label). Perangkat terpilih akan di-flash ke versi ini dan dicatat di riwayat OTA.
+              </div>
+            )}
 
             <div className="p-3 rounded-2xl bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/50 text-xs space-y-1 mb-3">
               <div className="flex justify-between">
@@ -3402,6 +3635,12 @@ export function DevicesManagement() {
                           <span className="text-[10px] text-gray-400 font-mono">({d.kode_node})</span>
                         </div>
                         <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-mono font-semibold text-gray-500 dark:text-gray-400" title={`Model: ${d.model_type || '-'}`}>
+                            FW {d.firmware_version || '?'}
+                            {isRollbackMode && normalizeFwVersion(d.firmware_version) !== normalizeFwVersion(targetFirmwareForUpgrade.version) && (
+                              <> → v{targetFirmwareForUpgrade.version}</>
+                            )}
+                          </span>
                           <span className="text-[10px] text-gray-400">{d.nama_lokasi || '-'}</span>
                           <span className={`text-[10px] font-bold ${d.is_online ? 'text-emerald-500' : 'text-gray-400'}`}>
                             {d.is_online ? '● Online' : '○ Offline'}
@@ -3418,25 +3657,45 @@ export function DevicesManagement() {
 
             {/* Action Buttons */}
             <div className="space-y-2 pt-2 border-t border-gray-100 dark:border-gray-800">
-              <button
-                type="button"
-                onClick={() => handleExecuteUpgradeMulti(true)}
-                disabled={isUpgradingFromRepo || upgradeSelectedDeviceIds.length === 0}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-md disabled:opacity-50 cursor-pointer transition-all"
-              >
-                <Zap className="w-4 h-4 text-amber-300" />
-                ⚡ Upgrade Sekarang (Instan ≤10 Detik)
-              </button>
+              {isRollbackMode ? (
+                <>
+                  <p className="text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+                    Anda akan melakukan rollback <strong>{upgradeSelectedDeviceIds.length} perangkat</strong> ke firmware{' '}
+                    <strong className="font-mono">v{targetFirmwareForUpgrade.version}</strong>. Lanjutkan?
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => handleExecuteUpgradeMulti(true)}
+                    disabled={isUpgradingFromRepo || upgradeSelectedDeviceIds.length === 0}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-md disabled:opacity-50 cursor-pointer transition-all"
+                  >
+                    <History className="w-4 h-4" />
+                    Lanjutkan Rollback
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => handleExecuteUpgradeMulti(true)}
+                    disabled={isUpgradingFromRepo || upgradeSelectedDeviceIds.length === 0}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-md disabled:opacity-50 cursor-pointer transition-all"
+                  >
+                    <Zap className="w-4 h-4 text-amber-300" />
+                    ⚡ Upgrade Sekarang (Instan ≤10 Detik)
+                  </button>
 
-              <button
-                type="button"
-                onClick={() => handleExecuteUpgradeMulti(false)}
-                disabled={isUpgradingFromRepo || upgradeSelectedDeviceIds.length === 0}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 disabled:opacity-50 cursor-pointer"
-              >
-                <Clock className="w-3.5 h-3.5" />
-                🕐 Jadwalkan Saja (Otomatis Tiap 15 Menit)
-              </button>
+                  <button
+                    type="button"
+                    onClick={() => handleExecuteUpgradeMulti(false)}
+                    disabled={isUpgradingFromRepo || upgradeSelectedDeviceIds.length === 0}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 disabled:opacity-50 cursor-pointer"
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    🕐 Jadwalkan Saja (Otomatis Tiap 15 Menit)
+                  </button>
+                </>
+              )}
 
               <button
                 type="button"
