@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreNodeRequest;
+use App\Models\SensorData;
 use App\Repositories\NodeLiveRepository;
 use App\Repositories\NodeRepository;
 use App\Repositories\SensorDataRepository;
@@ -25,8 +26,33 @@ class NodeController extends Controller
         // §1.3: tanpa ownership — semua user melihat semua device.
         $nodes = $this->nodeRepo->getAll();
 
-        $data = array_map(function (array $node) {
-            $live = $this->nodeLiveRepo->find($node['id']);
+        // Satu query batch untuk live-data semua node (anti N+1 — withering
+        // phpMyAdmin/API saat device banyak: dulu 1 query cache-miss + 1 query
+        // bacaan terbaru PER node).
+        $liveMap = $this->nodeLiveRepo->findMany(array_map(
+            fn (array $n) => (int) ($n['id'] ?? 0),
+            array_filter($nodes, fn (array $n) => isset($n['id']))
+        ));
+
+        // SNR link LoRa terakhir didengar gateway (satu query untuk semua baris
+        // gateway — dari metadata bacaan sensor terbaru, bukan karangan).
+        $lastLinkSnr = null;
+        $lastLinkAt = null;
+        try {
+            $latest = SensorData::orderByDesc('id')->first();
+            if ($latest) {
+                $meta = is_array($latest->metadata) ? $latest->metadata : (json_decode($latest->metadata ?? '[]', true) ?: []);
+                if (isset($meta['snr']) && is_numeric($meta['snr'])) {
+                    $lastLinkSnr = (float) $meta['snr'];
+                    $lastLinkAt = $latest->created_at ? $latest->created_at->toIso8601String() : null;
+                }
+            }
+        } catch (\Throwable $e) {
+            // Tabel kosong / kolom belum migrate — biarkan null (tampil '-').
+        }
+
+        $data = array_map(function (array $node) use ($liveMap, $lastLinkSnr, $lastLinkAt) {
+            $live = $liveMap[(int) ($node['id'] ?? 0)] ?? null;
             $liveReading = $live['last_reading'] ?? null;
             $conn = $this->nodeRepo->connectionStatus($node);
             $isOnline = $conn['state'] === 'ONLINE';
@@ -42,6 +68,14 @@ class NodeController extends Controller
                 'kode_node' => $node['kode_node'] ?? 'ESP32-WATER-01',
                 'nama_lokasi' => $node['nama_lokasi'] ?? 'Titik Pantau Sensor Utama',
                 'device_name' => $node['device_name'] ?? 'ESP32 Air Monitoring',
+                'device_role' => $node['device_role'] ?? 'node',
+                'ip_address' => $node['ip_address'] ?? null,
+                'hardware_id' => $node['hardware_id'] ?? null,
+                'wifi_rssi' => $node['wifi_rssi'] ?? null,
+                'wifi_ssid' => $node['wifi_ssid'] ?? null,
+                'wifi_channel' => $node['wifi_channel'] ?? null,
+                'last_link_snr' => ($node['device_role'] ?? 'node') === 'gateway' ? $lastLinkSnr : null,
+                'last_link_at' => ($node['device_role'] ?? 'node') === 'gateway' ? $lastLinkAt : null,
                 'status' => $node['status'] ?? 'active',
                 'is_online' => $isOnline,
                 'connection' => $conn['state'],

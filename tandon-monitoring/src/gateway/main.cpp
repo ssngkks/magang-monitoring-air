@@ -12,9 +12,18 @@
 #include "secrets.h"
 #include "WaterQualityAI.h"
 #include "LoraProtocol.h"
+#include "LoraSecure.h"
 #include "FirebaseClient.h"
 #include "TelegramNotifier.h"
 #include "OtaUpdater.h"
+#include <Preferences.h>
+
+#ifndef LORA_AUTH_KEY
+#define LORA_AUTH_KEY "lora-secret-key-32-bytes-auth!"
+#endif
+#ifndef LORA_STRICT_AUTH
+#define LORA_STRICT_AUTH 0  // 0 = terima legacy dengan peringatan (migrasi); 1 = tolak legacy
+#endif
 
 // ================== PIN LORA (JANGAN DIUBAH) ==================
 #define LORA_SCK   18
@@ -67,11 +76,65 @@ unsigned long lastNodeWarnTime = 0;
 bool wifiConnected = false;
 bool gatewayHelloSent = false;
 
-// Cache hello node terakhir yang diteruskan ke Laravel (prototipe: 1 node aktif)
+// Cache hello node terakhir yang diteruskan ke Laravel (prototipe: 1 node aktif).
+// lastNodeFw dimuat dari NVS agar reboot gateway tidak me-reset ke "1.0.0" dan
+// menimpa firmware_version DB yang sudah benar (bug flip 1.0.0). String kosong
+// = belum pernah dengar HELLO asli (jangan karang versi).
 String lastNodeHelloId = "";
 String lastNodeCaps = "";
-String lastNodeFw = "1.0.0";
+String lastNodeFw = "";
 unsigned long lastNodeHelloTime = 0;
+static void loadNodeFw() {
+  Preferences p;
+  if (p.begin("gw", true)) {
+    lastNodeFw = p.getString("node_fw", "");
+    p.end();
+  }
+  lastNodeFw.trim();
+}
+static void saveNodeFw(const String &v) {
+  String t = v;
+  t.trim();
+  if (t.length() == 0 || t == lastNodeFw) return;
+  lastNodeFw = t;
+  Preferences p;
+  if (p.begin("gw", false)) {
+    p.putString("node_fw", t);
+    p.end();
+  }
+}
+
+// Blueprint §3.1: anti-replay LoRa — nonce terakhir per pengirim.
+// Prototipe single-node: satu variabel (jangan refactor ke map multi-node di
+// task ini, sesuai §2 out-of-scope). Disimpan di NVS agar replay lama tetap
+// ditolak setelah gateway reboot.
+static uint32_t lastRxNonce = 0;
+static bool rxNonceLoaded = false;
+static void loadRxNonce() {
+  if (rxNonceLoaded) return;
+  Preferences p;
+  if (p.begin("lora_rx", true)) { lastRxNonce = p.getUInt("last_rx", 0); p.end(); }
+  rxNonceLoaded = true;
+}
+static void saveRxNonce(uint32_t n) {
+  lastRxNonce = n;
+  Preferences p;
+  if (p.begin("lora_rx", false)) { p.putUInt("last_rx", n); p.end(); }
+}
+
+// Diagnostik AUTH-MISMATCH (tambahan blueprint susulan): bedakan tiga kondisi
+// yang sekilas mirip tapi penanganannya beda total —
+//  (a) node benar-benar senyap (tidak ada paket radio masuk),
+//  (b) paket masuk tapi DITOLAK karena auth mismatch (node plain + gateway strict),
+//  (c) paket masuk dan DITERIMA.
+// lastNodePacketTime HANYA di-update untuk (c), sehingga (b) tidak menyamar
+// jadi (c). Counter mismatch + ringkasan berkala memudahkan diagnosis salah
+// pilih env saat build ulang (bukan masalah kabel/power).
+static unsigned long lastRejectedPacketTime = 0;
+static unsigned long lastMismatchSummaryTime = 0;
+static uint32_t authMismatchCount = 0;
+static uint32_t lastMismatchMismatchCount = 0; // untuk ringkasan delta
+#define MISMATCH_SUMMARY_INTERVAL_MS 60000UL
 
 // ============================================================
 // WIFI
@@ -176,7 +239,7 @@ void checkTelegramAlert(float ph, int turbidity, float temp, float waterLevel,
     rekomendasi = "Seluruh parameter beroperasi dalam batas aman. Sistem berjalan optimal.";
   }
 
-  String icon = (ai.classId == AI_BAHAYA) ? "🚨 *BAHAYA_HIDUP JOKOWI*\n\n"
+  String icon = (ai.classId == AI_BAHAYA) ? "🚨 *BAHAYA - Segera Periksa*\n\n"
               : (ai.classId == AI_ANOMALI) ? "⚠️ *WARNING*\n\n"
                                             : "✅ *NORMAL*\n\n";
 
@@ -231,6 +294,30 @@ void setup() {
 
   connectWiFi();
 
+  // Muat versi node terakhir dari NVS (anti flip 1.0.0 setelah reboot).
+  loadNodeFw();
+
+  // Sinkronisasi jam via NTP — WAJIB untuk validasi sertifikat TLS (Telegram
+  // & backend HTTPS): tanpa ini jam berhenti di 1970 dan semua verifikasi X509
+  // gagal (-9984) meski CA sudah benar. Zona WIB (UTC+7), tanpa DST.
+  if (wifiConnected) {
+    configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+    struct tm tmNow;
+    int ntpTries = 0;
+    while (ntpTries < 20 && (!getLocalTime(&tmNow) || tmNow.tm_year < (2024 - 1900))) {
+      delay(500);
+      Serial.print("*");
+      ntpTries++;
+    }
+    if (getLocalTime(&tmNow) && tmNow.tm_year >= (2024 - 1900)) {
+      Serial.printf("\nNTP: jam tersinkron (%04d-%02d-%02d %02d:%02d:%02d WIB)\n",
+                    tmNow.tm_year + 1900, tmNow.tm_mon + 1, tmNow.tm_mday,
+                    tmNow.tm_hour, tmNow.tm_min, tmNow.tm_sec);
+    } else {
+      Serial.println("\nNTP: GAGAL sinkron (HTTPS terverifikasi & Telegram mungkin gagal; HTTP LAN tetap jalan)");
+    }
+  }
+
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
   LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
 
@@ -284,11 +371,19 @@ void loop() {
   // Peringatan node sepi: gateway TIDAK BISA membangunkan node dari sini
   // (node memancar buta satu arah), jadi hanya laporkan + arahkan cek fisik.
   // Dashboard ikut menunjukkan STALE/OFFLINE via last_seen yang menua.
+  // BEDAKAN dari [AUTH-MISMATCH]: peringatan ini artinya TIDAK ADA paket radio
+  // masuk sama sekali (cek daya/kabel/LED). Kalau log [AUTH-MISMATCH] muncul
+  // beriringan, itu artinya paket ADA tapi DITOLAK (salah env/strict) — JANGAN
+  // cabut kabel dulu, samakan env build node & gateway.
   if (millis() - lastNodePacketTime >= NODE_SILENCE_WARN_MS &&
       millis() - lastNodeWarnTime >= NODE_SILENCE_WARN_REPEAT_MS) {
     lastNodeWarnTime = millis();
     unsigned long silentSec = (millis() - lastNodePacketTime) / 1000UL;
-    Serial.printf("\n[PERINGATAN] Tidak ada paket LoRa dari node selama %lu detik! Cek daya/kabel USB ESP32 #1, LED-nya (harus kedip tiap ~3 detik), lalu lihat Serial node.\n", silentSec);
+    if (authMismatchCount > 0 && millis() - lastRejectedPacketTime < NODE_SILENCE_WARN_MS) {
+      Serial.printf("\n[PERINGATAN] Tidak ada paket LoRa DITERIMA selama %lu detik, TAPI ada %u paket DITOLAK auth baru-baru ini. Dugaan: env mismatch (node plain + gateway strict?) atau kunci beda. Cek log [AUTH-MISMATCH] di atas sebelum cek kabel/power.\n", silentSec, authMismatchCount);
+    } else {
+      Serial.printf("\n[PERINGATAN] Tidak ada paket LoRa dari node selama %lu detik! Cek daya/kabel USB ESP32 #1, LED-nya (harus kedip tiap ~3 detik), lalu lihat Serial node.\n", silentSec);
+    }
   }
 
 
@@ -306,14 +401,76 @@ void loop() {
   while (LoRa.available()) {
     receivedData += (char)LoRa.read();
   }
+  // CATATAN: lastNodePacketTime TIDAK di-update di sini — hanya paket yang
+  // DITERIMA (lolos verifikasi) boleh menyegarkan timer node-hidup. Paket yang
+  // DITOLAK auth dicatat terpisah (lastRejectedPacketTime + counter) agar
+  // kasus "node-plain + gateway-strict" tidak menyamar jadi "node terdengar".
+
+  // Verifikasi HMAC + anti-replay SEBELUM parsing sensor.
+  // - Env default (FEATURE_LORA_AUTH mati): kode HMAC tidak ter-compile,
+  //   semua paket diterima sebagai plain (perilaku pra-hardening).
+  // - Env secure (flag nyala): paket secured v1 diverifikasi lalu field auth
+  //   di-strip; paket legacy diterima dengan peringatan bila LORA_STRICT_AUTH=0,
+  //   DITOLAK dengan log [AUTH-MISMATCH] bila =1.
+#ifdef FEATURE_LORA_AUTH
+  {
+    loadRxNonce();
+    String loraKey = String(LORA_AUTH_KEY);
+    uint32_t pktNonce = 0;
+    LoraSecure::VerifyResult vr = LoraSecure::verifyAndStrip(receivedData, pktNonce, lastRxNonce, loraKey);
+    if (vr == LoraSecure::AUTH_FAIL_HMAC) {
+      lastRejectedPacketTime = millis();
+      authMismatchCount++;
+      Serial.printf("[LoRaSecure][AUTH-MISMATCH] DITOLAK: HMAC tidak valid (paket ke-%u). Kemungkinan kunci LoRa beda / paket palsu. BUKAN masalah kabel/power — paket radio DITERIMA tapi DITOLAK. Cek LORA_AUTH_KEY sama di kedua sisi.\n", authMismatchCount);
+      return;
+    } else if (vr == LoraSecure::AUTH_FAIL_REPLAY) {
+      lastRejectedPacketTime = millis();
+      authMismatchCount++;
+      Serial.printf("[LoRaSecure][AUTH-MISMATCH] DITOLAK: replay nonce %u (terakhir %u, total ditolak %u). Paket lama direkam ulang — abaikan, bukan node mati.\n", pktNonce, lastRxNonce, authMismatchCount);
+      return;
+    } else if (vr == LoraSecure::AUTH_FAIL_FORMAT) {
+      lastRejectedPacketTime = millis();
+      authMismatchCount++;
+      Serial.printf("[LoRaSecure][AUTH-MISMATCH] DITOLAK: format auth rusak (total ditolak %u). BUKAN node mati.\n", authMismatchCount);
+      return;
+    } else if (vr == LoraSecure::AUTH_OK_SECURED) {
+      saveRxNonce(pktNonce);
+      lastNodePacketTime = millis();
+    } else {
+      // AUTH_OK_LEGACY
+      if (LORA_STRICT_AUTH) {
+        lastRejectedPacketTime = millis();
+        authMismatchCount++;
+        Serial.printf("[LoRaSecure][AUTH-MISMATCH] DITOLAK paket legacy tanpa HMAC (total ditolak %u). Dugaan kuat: NODE build DEFAULT (plain) + GATEWAY build SECURE strict. Samakan env (keduanya default atau keduanya secure) atau set LORA_STRICT_AUTH=0 sementara. BUKAN masalah kabel/power/node mati — paket radio DITERIMA %d byte tapi DITOLAK.\n", authMismatchCount, receivedData.length());
+        return;
+      }
+      Serial.println("[LoRaSecure] PERINGATAN: paket legacy tanpa HMAC diterima (masa transisi, STRICT=0).");
+      lastNodePacketTime = millis();
+    }
+  }
+#else
+  // Mode default: tanpa verifikasi HMAC (hemat flash) — terima apa adanya.
   lastNodePacketTime = millis();
+#endif
+
+  // Ringkasan berkala bila penolakan auth terus terjadi — bedakan dari
+  // peringatan "node tidak terdengar" di loop() yang artinya TIDAK ADA paket.
+  if (authMismatchCount != lastMismatchMismatchCount &&
+      millis() - lastMismatchSummaryTime >= MISMATCH_SUMMARY_INTERVAL_MS) {
+    lastMismatchSummaryTime = millis();
+    uint32_t delta = authMismatchCount - lastMismatchMismatchCount;
+    lastMismatchMismatchCount = authMismatchCount;
+    Serial.printf("[LoRaSecure][AUTH-MISMATCH] Ringkasan: %u paket ditolak dalam 60 dtk terakhir (total %u). Jika ini paket legacy + gateway STRICT, samakan env build. Jika HMAC salah terus, cek LORA_AUTH_KEY.\n", delta, authMismatchCount);
+  }
 
   // Paket pengumuman kapabilitas dari node (audit.md §5): teruskan sebagai HTTP hello.
   if (receivedData.startsWith("HELLO:")) {
     String helloNode = LoraProtocol::extractFieldWithFallback(receivedData, "NODE:", "ID:");
     String helloCaps = LoraProtocol::extractCapabilities(receivedData);
     String helloFw = LoraProtocol::extractField(receivedData, "HELLO:");
-    if (helloFw.length() == 0) helloFw = "1.0.0";
+    helloFw.trim();
+    // Kosong = tidak diketahui: teruskan "" agar backend mempertahankan versi
+    // DB (jangan karang "1.0.0" yang menimpa versi benar).
     if (helloCaps.length() == 0) helloCaps = NODE_DEFAULT_CAPABILITIES;
     Serial.println("[HELLO] Paket pengumuman dari node: " + helloNode + " caps=" + helloCaps);
     if (helloNode.length() > 0 && helloNode.length() < 3) {
@@ -323,7 +480,7 @@ void loop() {
       if (FirebaseClient::sendHello(helloNode, "node", helloFw, helloCaps)) {
         lastNodeHelloId = helloNode;
         lastNodeCaps = helloCaps;
-        lastNodeFw = helloFw;
+        saveNodeFw(helloFw); // persist agar reboot tak me-reset ke default
         lastNodeHelloTime = millis();
       }
     }

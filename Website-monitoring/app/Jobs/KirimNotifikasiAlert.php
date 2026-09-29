@@ -38,7 +38,7 @@ class KirimNotifikasiAlert implements ShouldQueue
         $aiService = app(AIDiagnosticService::class);
         $eval = ! empty($reading) ? $aiService->evaluate($reading) : null;
 
-        $timestamp = Carbon::now()->locale('id')->isoFormat('D MMMM Y, HH:mm:ss').' WIB';
+        $timestamp = Carbon::now()->tz('Asia/Jakarta')->locale('id')->isoFormat('D MMMM Y, HH:mm:ss').' WIB';
         $link = rtrim(config('app.url', 'http://localhost:5173'), '/').'/ai-analytics';
 
         if ($eval) {

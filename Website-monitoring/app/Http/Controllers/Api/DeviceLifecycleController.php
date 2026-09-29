@@ -42,6 +42,8 @@ class DeviceLifecycleController extends Controller
             'firmware_version' => ['nullable', 'string', 'max:30'],
             'hardware_id' => ['nullable', 'string', 'max:50'],
             'ip_address' => ['nullable', 'string', 'max:45'],
+            'wifi_ssid' => ['nullable', 'string', 'max:100'],
+            'wifi_channel' => ['nullable', 'integer', 'min:1', 'max:20'],
             'capabilities' => ['nullable', 'array'],
             'capabilities.*' => ['string', 'max:50'],
         ], [
@@ -49,22 +51,46 @@ class DeviceLifecycleController extends Controller
             'device_id.regex' => 'Identitas device hanya boleh huruf, angka, strip, dan underscore.',
         ]);
 
-        // §7: device_key wajib cocok dengan DEVICE_KEY server (hash, hash_equals).
+        // §7 & blueprint §3.3: device_key divalidasi terhadap provisioning key server
+        // atau token unik yang sudah tersimpan di database untuk node ini.
+        $kode = $validated['device_id'];
+        $role = $validated['device_role'] ?? 'node';
         $expected = (string) config('watermonitoring.device_key', '');
-        if ($expected === '' || ! hash_equals(hash('sha256', $expected), hash('sha256', $validated['device_key']))) {
+        $storedHash = $this->nodeRepo->getTokenHashByKodeNode($kode);
+
+        $isProvisioningKey = ($expected !== '' && hash_equals(hash('sha256', $expected), hash('sha256', $validated['device_key'])));
+        $isExistingDeviceToken = ($storedHash !== null && hash_equals($storedHash, hash('sha256', $validated['device_key'])));
+
+        if (! $isProvisioningKey && ! $isExistingDeviceToken) {
             return response()->json(['message' => 'Device key tidak valid.'], 401);
         }
 
-        $kode = $validated['device_id'];
-        $role = $validated['device_role'] ?? 'node';
+        // Token unik per-device (blueprint §3.3):
+        // Jika device baru atau mengautentikasi dengan provisioning key, generate token acak unik baru.
+        // Jika device sudah punya token dan hello dengan tokennya sendiri, pertahankan hash lama.
+        $deviceToken = null;
+        if ($storedHash === null || (! $isExistingDeviceToken && $isProvisioningKey)) {
+            $deviceToken = bin2hex(random_bytes(24)); // 48 karakter hex
+            $tokenHash = hash('sha256', $deviceToken);
+        } else {
+            $tokenHash = $storedHash;
+        }
+
         $info = [
-            'firmware_version' => $validated['firmware_version'] ?? '1.0.0',
             'hardware_id' => $validated['hardware_id'] ?? null,
             'ip_address' => $validated['ip_address'] ?? $request->ip(),
+            'wifi_ssid' => $validated['wifi_ssid'] ?? null,
+            'wifi_channel' => $validated['wifi_channel'] ?? null,
             'capabilities' => isset($validated['capabilities']) ? array_values($validated['capabilities']) : null,
-            'api_token_hash' => hash('sha256', $validated['device_key']),
+            'api_token_hash' => $tokenHash,
             'last_seen_at' => now(),
         ];
+        // Anti flip versi (mis. gateway reboot teruskan "1.0.0" basi):
+        // firmware_version DB hanya ditimpa bila hello membawa nilai non-kosong.
+        // Pola yang sama sudah dipakai heartbeat sejak lama.
+        if (! empty($validated['firmware_version'])) {
+            $info['firmware_version'] = $validated['firmware_version'];
+        }
 
         $node = $this->nodeRepo->findByKodeNode($kode);
 
@@ -79,11 +105,16 @@ class DeviceLifecycleController extends Controller
                 'status' => 'pending',
             ]));
 
-            return response()->json([
+            $resp = [
                 'status' => 'pending',
                 'message' => 'Menunggu registrasi di dashboard.',
                 'data' => $this->nodeRepo->find($id),
-            ], 202);
+            ];
+            if ($deviceToken !== null) {
+                $resp['device_token'] = $deviceToken;
+            }
+
+            return response()->json($resp, 202);
         }
 
         if (($node['status'] ?? '') === 'inactive') {
@@ -102,22 +133,37 @@ class DeviceLifecycleController extends Controller
                 $node = $this->nodeRepo->find($node['id']);
                 $summary = $this->reconcile->reconcile($node, $node['capabilities'] ?? []);
 
-                return response()->json([
+                $resp = [
                     'status' => 'active',
                     'message' => 'Device terdaftar (pra-registrasi cocok), sensor direkonsiliasi.',
                     'data' => $node,
                     'sensors' => $summary,
-                ]);
+                ];
+                if ($deviceToken !== null) {
+                    $resp['device_token'] = $deviceToken;
+                }
+
+                return response()->json($resp);
             }
 
-            return response()->json([
+            $resp = [
                 'status' => 'pending',
                 'message' => 'Menunggu registrasi di dashboard.',
                 'data' => $node,
-            ], 202);
+            ];
+            if ($deviceToken !== null) {
+                $resp['device_token'] = $deviceToken;
+            }
+
+            return response()->json($resp, 202);
         }
 
-        return response()->json(['status' => 'active', 'data' => $node]);
+        $resp = ['status' => 'active', 'data' => $node];
+        if ($deviceToken !== null) {
+            $resp['device_token'] = $deviceToken;
+        }
+
+        return response()->json($resp);
     }
 
     /**
@@ -131,6 +177,8 @@ class DeviceLifecycleController extends Controller
             'device_key' => ['required', 'string'],
             'uptime' => ['nullable', 'integer', 'min:0'],
             'wifi_rssi' => ['nullable', 'integer'],
+            'wifi_ssid' => ['nullable', 'string', 'max:100'],
+            'wifi_channel' => ['nullable', 'integer', 'min:1', 'max:20'],
             'firmware_version' => ['nullable', 'string', 'max:30'],
         ]);
 
@@ -150,6 +198,16 @@ class DeviceLifecycleController extends Controller
         $heartbeatUpdate = ['last_seen_at' => now()];
         if (! empty($validated['firmware_version'])) {
             $heartbeatUpdate['firmware_version'] = $validated['firmware_version'];
+        }
+        // RSSI/SSID/channel WiFi gateway disimpan (dikirim tiap heartbeat) untuk kartu sinyal.
+        if (isset($validated['wifi_rssi'])) {
+            $heartbeatUpdate['wifi_rssi'] = $validated['wifi_rssi'];
+        }
+        if (isset($validated['wifi_ssid'])) {
+            $heartbeatUpdate['wifi_ssid'] = $validated['wifi_ssid'];
+        }
+        if (isset($validated['wifi_channel'])) {
+            $heartbeatUpdate['wifi_channel'] = $validated['wifi_channel'];
         }
         $this->nodeRepo->update($node['id'], $heartbeatUpdate);
         $node = $this->nodeRepo->find($node['id']);

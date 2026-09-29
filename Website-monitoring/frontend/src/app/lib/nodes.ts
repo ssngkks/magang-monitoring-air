@@ -138,6 +138,48 @@ export function getPhysicalStatus(lr: LastReading): Exclude<NodeStatus, 'Offline
   return 'Normal';
 }
 
+/** Gateway penerus (LoRa+WiFi) tidak punya sensor sendiri — status sensornya
+ * bukan "Normal" melainkan tidak ada data. */
+export function isGateway(node: any): boolean {
+  return (node?.device_role ?? 'node') === 'gateway';
+}
+
+/** Node sensor (bukan gateway) — satu-satunya yang punya data bacaan. */
+export function sensorNodes(nodes: any[]): any[] {
+  return (nodes || []).filter((n) => !isGateway(n));
+}
+
+const AVG_NUM_KEYS = [
+  'ph', 'temp', 'humidity', 'turbidity', 'water_level',
+  'mpu_x', 'mpu_y', 'mpu_z', 'roll', 'pitch', 'yaw',
+  'ai_confidence', 'rssi', 'snr',
+] as const;
+
+function aiWorse(a: string, b: string): string {
+  const rank = (s: string) => (s === 'Bahaya' ? 3 : s === 'Anomali' || s === 'Warning' ? 2 : 1);
+  return rank(a) >= rank(b) ? a : b;
+}
+
+/** Rata-rata bacaan N node sensor (termasuk yang offline — data terakhirnya
+ * tetap dihitung). Gateway tidak pernah ikut (tidak punya sensor). */
+export function averageReadings(nodes: any[]): { count: number; reading: any | null } {
+  const readings = sensorNodes(nodes)
+    .map((n) => getLastReading(n))
+    .filter((r) => r && Object.keys(r).length > 0);
+  if (readings.length === 0) return { count: 0, reading: null };
+  const avg: Record<string, any> = { kode_node: 'ALL', ai_status: 'Normal', vibration: false };
+  for (const k of AVG_NUM_KEYS) {
+    const vals = readings.map((r) => toNumber((r as any)[k])).filter((v) => !isNaN(v));
+    avg[k] = vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  }
+  for (const r of readings) {
+    if (r.vibration === true || r.vibration === 1 || r.vibration === '1') avg.vibration = true;
+    avg.ai_status = aiWorse(String(avg.ai_status), String(r.ai_status ?? 'Normal'));
+  }
+  avg.ai_diagnosis = readings.length > 1 ? `Rata-rata ${readings.length} node sensor.` : (readings[0].ai_diagnosis ?? null);
+  return { count: readings.length, reading: avg };
+}
+
 /** Status koneksi + AI/threshold: offline bila tidak online, selebihnya terburuk dari AI & 3 kategori. */
 export function getNodeOverallStatus(node: any): NodeStatus {
   if (!isNodeOnline(node)) return 'Offline';
@@ -186,6 +228,11 @@ export function summarizeNodes(nodes: any[]): NodesSummary {
     else summary.offline += 1;
     const overall = getNodeOverallStatus(n);
     if (overall === 'Warning' || overall === 'Bahaya') summary.warning += 1;
+    // Gateway dikecualikan dari agregat sensor (tidak punya sensor sendiri —
+    // "Normal"-nya palsu). Tetap dihitung di Total/Online/Offline.
+    if (isGateway(n)) {
+      continue;
+    }
     const lr = getLastReading(n);
     if (!online) {
       summary.waterQuality.Offline += 1;

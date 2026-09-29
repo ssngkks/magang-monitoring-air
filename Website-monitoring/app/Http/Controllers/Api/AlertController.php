@@ -78,6 +78,9 @@ class AlertController extends Controller
             'meta' => [
                 'per_page' => $perPage,
                 'total' => count($data),
+                // Total belum-dibaca sebenarnya (tanpa batas per_page) untuk
+                // lonceng notifikasi — per_page kecil tidak boleh memangkasnya.
+                'unread_total' => $isRead === false ? $this->alertRepo->getUnreadCountByUserId($userId) : null,
             ],
         ]);
     }

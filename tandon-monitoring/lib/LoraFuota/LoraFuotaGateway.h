@@ -27,9 +27,12 @@ public:
   // Return true jika seluruh proses berhasil.
   // otaId (dari manifest) diteruskan ke semua laporan status agar server
   // menutup baris job yang tepat.
+  // expectedSignature: hex Ed25519 128 char dari manifest (blueprint §3.4).
+  // Bila kosong → gateway TOLAK lanjut (jangan FUOTA-kan binary tak bertanda).
   bool startFuota(const String &targetNode, const String &fwUrl,
                   const String &version, uint32_t expectedSize,
-                  const String &expectedChecksum, uint32_t otaId = 0);
+                  const String &expectedChecksum, uint32_t otaId = 0,
+                  const String &expectedSignature = "");
 
   FuotaGatewayState getState() const { return state; }
   uint16_t getCurrentChunk() const { return currentChunk; }
@@ -39,6 +42,9 @@ private:
   FuotaGatewayState state;
   String currentTargetNode;
   String currentVersion;
+  String currentChecksum;
+  String currentSignature;
+  uint32_t currentNonce;
   uint32_t totalFileSize;
   uint16_t totalChunks;
   uint16_t currentChunk;
@@ -48,8 +54,11 @@ private:
   // Satu pintu laporan status: selalu sertakan target + versi + otaId aktif.
   void reportOta(const String &status, int progress, const String &error = "");
 
-  bool downloadToSpiffs(const String &url, const String &targetNode, const String &expectedChecksum);
+  // expectedSignature wajib (blueprint §3.4): binary tanpa signature valid DITOLAK.
+  bool downloadToSpiffs(const String &url, const String &targetNode, const String &expectedChecksum, const String &expectedSignature);
   // Return: 1 = node menerima, 2 = node sudah versi terbaru (tanpa flash), 0 = gagal
+  // Mengirim ANNOUNCE secured v1 (HMAC8 + nonce + signature) dengan fallback
+  // legacy bila node lama tidak merespons (masa transisi, dicatat di Serial).
   int sendAnnounce(const String &targetNode, const String &version, uint32_t size, uint16_t chunks);
   bool sendChunks(const String &targetNode);
   bool readChunk(File &file, uint16_t seq, uint8_t *payload, size_t &bytesRead);

@@ -65,7 +65,7 @@ export const api = {
       `/nodes/${nodeId}/sensor-data${params ? `?${params}` : ''}`,
     ),
   alerts: (params = '') =>
-    apiFetch<{ data: AlertData[]; current_page: number; last_page: number }>(
+    apiFetch<{ data: AlertData[]; current_page: number; last_page: number; meta?: { per_page?: number; total?: number; unread_total?: number | null } }>(
       `/alerts${params ? `?${params}` : ''}`,
     ),
   markAlertRead: (id: string | number) =>
@@ -179,7 +179,10 @@ export const api = {
   // Lifecycle device §5 audit.md — hello/heartbeat milik ESP32, tiga ini milik dashboard
   pendingDevices: () => apiFetch<{ data: PendingDevice[] }>('/devices/pending'),
   registerDevice: (id: string | number, data: {
-    device_name?: string;
+  device_name?: string;
+  device_role?: string;
+  ip_address?: string | null;
+  hardware_id?: string | null;
     device_type_id?: string | number | null;
     location_id?: string | number | null;
     model_type?: string | null;
@@ -259,8 +262,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
-  deleteFirmware: (id: string | number) =>
-    apiFetch<{ message: string }>(`/firmwares/${id}`, { method: 'DELETE' }),
+  deleteFirmware: (id: string | number, force = false) =>
+    apiFetch<{ message: string }>(`/firmwares/${id}${force ? '?force=1' : ''}`, { method: 'DELETE' }),
   triggerOta: (nodeId: string | number, firmwareId: string | number, force = false) =>
     apiFetch<{ message: string; data: any; code?: string }>(`/devices/${nodeId}/ota/trigger`, {
       method: 'POST',
@@ -349,6 +352,14 @@ export interface Node {
   is_online: boolean;
   last_seen_at: string | null;
   device_name?: string;
+  device_role?: string;
+  ip_address?: string | null;
+  hardware_id?: string | null;
+  wifi_rssi?: number | null;
+  wifi_ssid?: string | null;
+  wifi_channel?: number | null;
+  last_link_snr?: number | null;
+  last_link_at?: string | null;
   connection?: 'ONLINE' | 'STALE' | 'OFFLINE' | string;
   rssi?: number | null;
   snr?: number | null;
@@ -499,6 +510,7 @@ export interface OtaHistoryItem {
   firmware_id: string | number;
   firmware_version?: string | null;
   firmware_name?: string | null;
+  firmware_target_model?: string | null;
   status: 'pending' | 'downloading' | 'installing' | 'success' | 'failed';
   progress_percent: number;
   error_message?: string | null;

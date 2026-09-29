@@ -2,7 +2,17 @@
 #include "LoraFuotaNode.h"
 #include <LoRa.h>
 #include <Update.h>
+#include <Preferences.h>
+#include "LoraSecure.h"
+#ifdef FEATURE_OTA_SIGNING
+#include "FirmwareVerify.h"
+#include "firmware_signing_key.h"
+#include "mbedtls/sha256.h"
+#endif
 
+#ifndef LORA_AUTH_KEY
+#define LORA_AUTH_KEY "lora-secret-key-32-bytes-auth!"
+#endif
 
 LoraFuotaNode::LoraFuotaNode(const String &nodeId)
   : myNodeId(nodeId),
@@ -11,13 +21,26 @@ LoraFuotaNode::LoraFuotaNode(const String &nodeId)
     totalChunks(0),
     expectedChunkSeq(0),
     newVersion(""),
-    lastActivityTime(0) {}
+    lastAnnounceNonce(0),
+    hasExpectedSig(false),
+    shaCtx(nullptr),
+    lastActivityTime(0) {
+  memset(expectedSig, 0, sizeof(expectedSig));
+}
 
 void LoraFuotaNode::begin() {
   state = FUOTA_NODE_IDLE;
   expectedChunkSeq = 0;
   totalChunks = 0;
   firmwareSize = 0;
+  hasExpectedSig = false;
+  // Muat nonce ANNOUNCE terakhir dari NVS agar replay lama tetap ditolak
+  // meski node sempat reboot (blueprint §3.1 anti-replay).
+  Preferences p;
+  if (p.begin("lora_rx", true)) {
+    lastAnnounceNonce = p.getUInt("last_ann", 0);
+    p.end();
+  }
 }
 
 void LoraFuotaNode::sendAck(uint8_t ackedCmd, uint16_t seq, uint8_t status) {
@@ -64,6 +87,16 @@ void LoraFuotaNode::abortOta(const char *reason) {
   if (Update.isRunning()) {
     Update.abort();
   }
+#ifdef FEATURE_OTA_SIGNING
+  if (shaCtx) {
+    mbedtls_sha256_free((mbedtls_sha256_context*)shaCtx);
+    delete (mbedtls_sha256_context*)shaCtx;
+    shaCtx = nullptr;
+  }
+#else
+  shaCtx = nullptr;
+#endif
+  hasExpectedSig = false;
   state = FUOTA_NODE_IDLE;
   expectedChunkSeq = 0;
 }
@@ -134,6 +167,106 @@ bool LoraFuotaNode::processPacket(int packetSize) {
         }
       }
 
+      // --- Verifikasi ANNOUNCE (di-gate compile-time, blueprint susulan) ---
+      // Mode secure (FEATURE_LORA_AUTH / FEATURE_OTA_SIGNING nyala): ANNOUNCE
+      // wajib tervalidasi HMAC + nonce + signature SEBELUM terima chunk.
+      // Mode default: terima ANNOUNCE legacy/extension apa adanya (perilaku
+      // pra-hardening, hanya cek SHA/CRC per chunk) — kode HMAC/Ed25519 tidak
+      // ikut ter-compile (hemat flash).
+      bool isLegacy = (LoRa.available() == 0);
+      uint32_t annNonce = 0;
+      hasExpectedSig = false;
+#ifdef FEATURE_LORA_AUTH
+      if (!isLegacy) {
+        if (!LoRa.available()) { sendNack(FUOTA_CMD_ANNOUNCE, 0, FUOTA_STATUS_AUTH_FAIL); return true; }
+        uint8_t protoVer = LoRa.read();
+        if (protoVer != FUOTA_PROTO_V1_SECURED) {
+          Serial.printf("[FUOTA Node] DITOLAK: proto FUOTA tak dikenal 0x%02X\n", protoVer);
+          sendNack(FUOTA_CMD_ANNOUNCE, 0, FUOTA_STATUS_AUTH_FAIL);
+          return true;
+        }
+        if (LoRa.available() < 4 + 8 + 1) {
+          Serial.println("[FUOTA Node] DITOLAK: ANNOUNCE secured terpotong.");
+          sendNack(FUOTA_CMD_ANNOUNCE, 0, FUOTA_STATUS_AUTH_FAIL);
+          return true;
+        }
+        annNonce = 0;
+        annNonce |= (uint32_t)LoRa.read();
+        annNonce |= ((uint32_t)LoRa.read()) << 8;
+        annNonce |= ((uint32_t)LoRa.read()) << 16;
+        annNonce |= ((uint32_t)LoRa.read()) << 24;
+        uint8_t recvHmac[8];
+        for (int i = 0; i < 8; i++) recvHmac[i] = LoRa.read();
+        uint8_t sigLen = LoRa.available() ? LoRa.read() : 0;
+        uint8_t recvSig[64] = {0};
+        if (sigLen == 64) {
+          if (LoRa.available() < 64) {
+            Serial.println("[FUOTA Node] DITOLAK: signature terpotong.");
+            sendNack(FUOTA_CMD_ANNOUNCE, 0, FUOTA_STATUS_SIG_FAIL);
+            return true;
+          }
+          for (int i = 0; i < 64; i++) recvSig[i] = LoRa.read();
+        } else if (sigLen != 0) {
+          Serial.println("[FUOTA Node] DITOLAK: panjang signature aneh.");
+          sendNack(FUOTA_CMD_ANNOUNCE, 0, FUOTA_STATUS_SIG_FAIL);
+          return true;
+        }
+        // Verifikasi HMAC (kunci provisioning; jalur turunan per-device siap
+        // di LoraSecure::effectiveKey untuk aktivasi armada berikutnya).
+        String loraKey = String(LORA_AUTH_KEY);
+        String expectHex = LoraSecure::fuotaAnnounceHmac(size, chunks, annNonce, targetNode, version, loraKey);
+        uint8_t expectRaw[8] = {0};
+        for (int i = 0; i < 8 && expectHex.length() == 16; i++) {
+          expectRaw[i] = (uint8_t)strtoul(expectHex.substring(i * 2, i * 2 + 2).c_str(), nullptr, 16);
+        }
+        uint8_t diff = 0;
+        for (int i = 0; i < 8; i++) diff |= (recvHmac[i] ^ expectRaw[i]);
+        if (diff != 0) {
+          Serial.println("[FUOTA Node] DITOLAK ANNOUNCE: HMAC tidak valid (kemungkinan pemalsu).");
+          sendNack(FUOTA_CMD_ANNOUNCE, 0, FUOTA_STATUS_AUTH_FAIL);
+          return true;
+        }
+        if (annNonce <= lastAnnounceNonce && lastAnnounceNonce != 0) {
+          Serial.printf("[FUOTA Node] DITOLAK ANNOUNCE: replay (nonce %u <= terakhir %u).\n", annNonce, lastAnnounceNonce);
+          sendNack(FUOTA_CMD_ANNOUNCE, 0, FUOTA_STATUS_AUTH_FAIL);
+          return true;
+        }
+#ifdef FEATURE_OTA_SIGNING
+        if (sigLen != 64) {
+          // Secured v1 tanpa signature = tolak (checksum saja tak cukup).
+          Serial.println("[FUOTA Node] DITOLAK ANNOUNCE: v1 wajib sertakan signature Ed25519.");
+          sendNack(FUOTA_CMD_ANNOUNCE, 0, FUOTA_STATUS_SIG_FAIL);
+          return true;
+        }
+        memcpy(expectedSig, recvSig, 64);
+        hasExpectedSig = true;
+#else
+        // Secure-HMAC tapi signing mati: signature diabaikan (kompatibel
+        // gateway default yang kirim sigLen=0). Lanjut dengan SHA/CRC saja.
+        (void)recvSig;
+        hasExpectedSig = false;
+#endif
+        lastAnnounceNonce = annNonce;
+        Preferences pw;
+        if (pw.begin("lora_rx", false)) { pw.putUInt("last_ann", lastAnnounceNonce); pw.end(); }
+        Serial.printf("[FUOTA Node] ANNOUNCE secured VALID (nonce %u%s).\n", annNonce,
+                      hasExpectedSig ? ", sig OK" : "");
+      } else {
+        Serial.println("[FUOTA Node] PERINGATAN: ANNOUNCE legacy tanpa HMAC/signature (masa transisi).");
+        Serial.println("[FUOTA Node] Rilis berikutnya akan MENOLAK legacy. Segera update gateway.");
+        hasExpectedSig = false;
+      }
+#else
+      // Mode default: abaikan byte ekstensi bila ada (gateway secure), terima
+      // seperti ANNOUNCE legacy pra-hardening.
+      if (!isLegacy) {
+        while (LoRa.available()) LoRa.read();
+        Serial.println("[FUOTA Node] ANNOUNCE diterima (mode default, tanpa verifikasi HMAC/signature).");
+      }
+      (void)annNonce;
+      hasExpectedSig = false;
+#endif
+
       Serial.println("\n========================================");
       Serial.println("[FUOTA Node] ANNOUNCEMENT PEMBARUAN DITERIMA!");
       Serial.printf("[FUOTA Node] Versi: %s | Ukuran: %u bytes (%u chunks)\n",
@@ -143,6 +276,19 @@ bool LoraFuotaNode::processPacket(int packetSize) {
       if (Update.isRunning()) {
         Update.abort();
       }
+#ifdef FEATURE_OTA_SIGNING
+      // Siapkan konteks SHA inkremental untuk verifikasi signature di COMPLETE.
+      if (shaCtx) { mbedtls_sha256_free((mbedtls_sha256_context*)shaCtx); delete (mbedtls_sha256_context*)shaCtx; shaCtx = nullptr; }
+      {
+        mbedtls_sha256_context *ctx = new mbedtls_sha256_context;
+        mbedtls_sha256_init(ctx);
+        mbedtls_sha256_starts(ctx, 0);
+        shaCtx = ctx;
+      }
+#else
+      // Mode default: tanpa konteks SHA (hanya CRC16 per chunk, perilaku awal).
+      shaCtx = nullptr;
+#endif
 
       if (!Update.begin(size, U_FLASH)) {
         Serial.print("[FUOTA Node] GAGAL Update.begin(): ");
@@ -216,6 +362,11 @@ bool LoraFuotaNode::processPacket(int packetSize) {
           sendNack(FUOTA_CMD_CHUNK, seq, FUOTA_STATUS_FLASH_ERROR);
           return true;
         }
+        // Umpan SHA inkremental untuk verifikasi signature di COMPLETE
+        // (mode secure saja; mode default hanya mengandalkan CRC16 per chunk).
+#ifdef FEATURE_OTA_SIGNING
+        if (shaCtx) mbedtls_sha256_update((mbedtls_sha256_context*)shaCtx, payload, chunkLen);
+#endif
 
         expectedChunkSeq++;
         if (expectedChunkSeq % 20 == 0 || expectedChunkSeq == totalChunks) {
@@ -259,6 +410,38 @@ bool LoraFuotaNode::processPacket(int packetSize) {
         abortOta("Size verification failed");
         return true;
       }
+
+      // Verifikasi signature Ed25519 SENDIRI sebelum flash final
+      // (mode secure saja; mode default: CRC16/size saja seperti awal).
+#ifdef FEATURE_OTA_SIGNING
+      if (hasExpectedSig && shaCtx) {
+        uint8_t digest[32];
+        // Salin konteks agar verify tidak merusak state bila perlu retry.
+        mbedtls_sha256_context tmp = *((mbedtls_sha256_context*)shaCtx);
+        mbedtls_sha256_finish(&tmp, digest);
+        mbedtls_sha256_free(&tmp);
+        if (!FirmwareVerify::verifyDigest(digest, expectedSig, FIRMWARE_PUBLIC_KEY)) {
+          Serial.println("[FUOTA Node] DITOLAK: signature Ed25519 TIDAK VALID. Flash dibatalkan.");
+          sendNack(FUOTA_CMD_COMPLETE, totalChunks, FUOTA_STATUS_SIG_FAIL);
+          abortOta("Signature verification failed");
+          return true;
+        }
+        Serial.println("[FUOTA Node] Signature Ed25519 VALID. Lanjut finalisasi flash.");
+      } else if (!hasExpectedSig) {
+        // Masa transisi legacy (ANNOUNCE tanpa signature): izinkan dengan
+        // peringatan keras agar armada lama tidak brick, tapi catat jelas.
+        Serial.println("[FUOTA Node] PERINGATAN: COMPLETE tanpa signature (legacy). Diterima sementara.");
+        Serial.println("[FUOTA Node] Rilis berikutnya akan MENOLAK tanpa signature.");
+      }
+      if (shaCtx) {
+        mbedtls_sha256_free((mbedtls_sha256_context*)shaCtx);
+        delete (mbedtls_sha256_context*)shaCtx;
+        shaCtx = nullptr;
+      }
+#else
+      // Mode default: lewati verifikasi signature (hemat flash, tanpa Crypto).
+      (void)hasExpectedSig;
+#endif
 
       if (Update.end(true)) {
         if (Update.isFinished()) {

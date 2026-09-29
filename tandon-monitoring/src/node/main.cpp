@@ -18,7 +18,12 @@
 #include "DHTSensor.h"
 #include "VibrationSensor.h"
 #include "LoraFuotaNode.h"
+#include "LoraSecure.h"
 #include "secrets.h"
+
+#ifndef LORA_AUTH_KEY
+#define LORA_AUTH_KEY "lora-secret-key-32-bytes-auth!"
+#endif
 
 LoraFuotaNode fuotaNode(KODE_NODE);
 
@@ -85,7 +90,7 @@ void printSerialStatus() {
   unsigned long vibration = (unsigned long)sensors.get("GETARAN").values[0];
 
   Serial.println("========================================");
-  Serial.println("LORA 1 - NODE SENSOR - STATUS V1.0.2");
+  Serial.println("LORA 1 - NODE SENSOR - STATUS V1.0.3");
   Serial.println("========================================");
   Serial.printf("GETARAN POMPA     : %lu pulsa\n", vibration);
   Serial.printf("KETINGGIAN AIR    : %.1f cm (Max: %d cm)\n", waterLevel, MAX_HEIGHT);
@@ -107,7 +112,7 @@ void printSerialStatus() {
 // Versi firmware node (dilaporkan saat hello + penolak ANNOUNCE versi sama).
 // WAJIB di-bump setiap rilis binary node baru agar penjaga anti-flash-ulang akurat.
 #ifndef NODE_FW_VERSION
-#define NODE_FW_VERSION "v1.0.2"
+#define NODE_FW_VERSION "v1.0.3"
 #endif
 
 void sendLoraData() {
@@ -117,15 +122,30 @@ void sendLoraData() {
   }
 
   String payload = LoraProtocol::encode(sensors);
+  // Blueprint susulan simplify-crypto: HMAC LoRa di-gate FEATURE_LORA_AUTH.
+  // Default (flag mati): kirim plain seperti sebelum hardening (hemat flash,
+  // kode HMAC tidak ikut ter-compile — lihat LoraSecure.cpp).
+  // Secure (env *_secure): nonce monoton NVS + HMAC-SHA256-8.
+#ifdef FEATURE_LORA_AUTH
+  uint32_t nonce = LoraSecure::nextNonce();
+  String secured = LoraSecure::appendAuth(payload, nonce, String(LORA_AUTH_KEY));
+#else
+  String secured = payload;
+#endif
 
   LoRa.beginPacket();
-  LoRa.print(payload);
+  LoRa.print(secured);
   bool sent = LoRa.endPacket();
 
   Serial.print("LORA DIKIRIM      : ");
   Serial.println(sent ? "BERHASIL" : "GAGAL");
   Serial.print("PAYLOAD           : ");
   Serial.println(payload);
+#ifdef FEATURE_LORA_AUTH
+  Serial.printf("SECURE            : nonce=%u HMAC+VER terlampir (panjang %d)\n", nonce, secured.length());
+#else
+  Serial.printf("PLAIN             : mode default tanpa HMAC (panjang %d)\n", secured.length());
+#endif
   Serial.println();
 
   if (sent) {
@@ -139,14 +159,21 @@ void sendLoraData() {
 
 // Paket pengumuman kapabilitas ke gateway (audit.md §5/§6).
 // MPU6050 hanya diumumkan bila probe I2C menemukannya (§6.3).
+// Blueprint §3.1: HELLO juga diautentikasi HMAC + nonce (anti-spoof hello).
 void sendHelloPacket() {
   if (!loraReady) return;
 
   bool mpuPresent = sensors.isOnline("MPU");
   String payload = LoraProtocol::encodeHello(NODE_FW_VERSION, mpuPresent);
+#ifdef FEATURE_LORA_AUTH
+  uint32_t nonce = LoraSecure::nextNonce();
+  String secured = LoraSecure::appendAuth(payload, nonce, String(LORA_AUTH_KEY));
+#else
+  String secured = payload;
+#endif
 
   LoRa.beginPacket();
-  LoRa.print(payload);
+  LoRa.print(secured);
   bool sent = LoRa.endPacket();
 
   Serial.print("HELLO DIKIRIM     : ");

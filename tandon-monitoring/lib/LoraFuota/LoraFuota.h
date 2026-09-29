@@ -37,7 +37,15 @@ enum FuotaStatus : uint8_t {
   FUOTA_STATUS_UNKNOWN_TARGET  = 0x07,
   FUOTA_STATUS_LEN_ERROR       = 0x08,
   FUOTA_STATUS_ALREADY_LATEST  = 0x09, // Node sudah menjalankan versi ini — tolak tanpa flash ulang
+  FUOTA_STATUS_AUTH_FAIL       = 0x0A, // Blueprint §3.1: ANNOUNCE HMAC/nonce tidak valid — tolak sebelum flash
+  FUOTA_STATUS_SIG_FAIL        = 0x0B, // Blueprint §3.4: signature Ed25519 firmware tidak valid — tolak flash
 };
+
+// Blueprint §3.1: versi protokol FUOTA untuk migrasi tanpa breaking total.
+// - 0x00 = legacy (tanpa HMAC/signature, diterima dengan peringatan selama transisi).
+// - 0x01 = secured (ANNOUNCE wajib HMAC8 + nonce + signature Ed25519).
+static const uint8_t FUOTA_PROTO_V0_LEGACY = 0x00;
+static const uint8_t FUOTA_PROTO_V1_SECURED = 0x01;
 
 namespace LoraFuota {
 

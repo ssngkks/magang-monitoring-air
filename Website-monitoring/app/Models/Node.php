@@ -24,6 +24,9 @@ class Node extends Model
         'capabilities',
         'ip_address',
         'hardware_id',
+        'wifi_rssi',
+        'wifi_ssid',
+        'wifi_channel',
         'last_seen_at',
     ];
 

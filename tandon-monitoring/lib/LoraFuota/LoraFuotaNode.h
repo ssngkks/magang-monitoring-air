@@ -46,6 +46,14 @@ private:
   uint16_t expectedChunkSeq;
   String newVersion;
   String runningVersion;
+  // Blueprint §3.1/§3.4: state keamanan FUOTA — nonce ANNOUNCE terakhir yang
+  // diterima (anti-replay) + signature Ed25519 yang diumumkan gateway.
+  // SHA-256 dihitung inkremental per chunk agar COMPLETE bisa verifikasi
+  // signature SEBELUM Update.end(true) (jangan percaya gateway saja).
+  uint32_t lastAnnounceNonce;
+  uint8_t expectedSig[64];
+  bool hasExpectedSig;
+  void *shaCtx; // mbedtls_sha256_context dialokasikan saat ANNOUNCE diterima
 
   unsigned long lastActivityTime;
   static const unsigned long FUOTA_TIMEOUT_MS = 60000; // 60 detik timeout jika terputus

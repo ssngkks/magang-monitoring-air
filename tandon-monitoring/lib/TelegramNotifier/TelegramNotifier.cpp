@@ -31,6 +31,8 @@ static String urlEncode(const String &str) {
   return encoded;
 }
 
+#include "certs.h"
+
 void TelegramNotifier::send(const String &message) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("TELEGRAM: WIFI TIDAK TERHUBUNG");
@@ -38,7 +40,8 @@ void TelegramNotifier::send(const String &message) {
   }
 
   WiFiClientSecure client;
-  client.setInsecure(); // untuk produksi idealnya pakai root CA Telegram
+  // Gunakan DigiCert Global Root CA resmi Telegram (blueprint §3.2)
+  client.setCACert(TELEGRAM_ROOT_CA);
 
   HTTPClient https;
   https.begin(client, "https://api.telegram.org/bot" + String(TELEGRAM_BOT_TOKEN) + "/sendMessage");

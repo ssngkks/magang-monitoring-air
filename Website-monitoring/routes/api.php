@@ -26,10 +26,14 @@ Route::middleware(['throttle:ingest'])->group(function () {
     Route::post('/devices/heartbeat', [DeviceLifecycleController::class, 'heartbeat']);
 });
 
-// Public OTA routes (Gateway ESP32 & Web Manifest check)
-Route::get('/firmware/ota/check', [FirmwareOtaController::class, 'checkOta']);
-Route::get('/firmware/ota/download/{id}', [FirmwareOtaController::class, 'downloadFirmware']);
-Route::post('/firmware/ota/status', [FirmwareOtaController::class, 'reportOtaStatus']);
+// OTA routes dilindungi autentikasi device (token per-device, blueprint §3.3)
+// + throttle (blueprint §3.5) — konsisten dengan /sensor/store di atas.
+// Tanpa ini siapa pun bisa download binary firmware atau spam status.
+Route::middleware(['verify.node.token', 'throttle:ingest'])->group(function () {
+    Route::get('/firmware/ota/check', [FirmwareOtaController::class, 'checkOta']);
+    Route::get('/firmware/ota/download/{id}', [FirmwareOtaController::class, 'downloadFirmware']);
+    Route::post('/firmware/ota/status', [FirmwareOtaController::class, 'reportOtaStatus']);
+});
 
 // =========================================================================
 // TEMPLATE AUTH MIDDLEWARE FIREBASE (JANGAN DIHAPUS - UNTUK TEMPLATE PROJEK LAIN)

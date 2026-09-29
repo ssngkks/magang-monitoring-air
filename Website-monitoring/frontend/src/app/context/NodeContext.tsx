@@ -60,7 +60,11 @@ export function NodeProvider({ children }: { children: ReactNode }) {
         setFetchError(null);
         try {
           const res = await api.alerts('is_read=0&per_page=1');
-          if (!cancelled && Array.isArray(res.data)) setAlertsUnread(res.data.length);
+          if (!cancelled) {
+            // Pakai total sebenarnya dari server (bukan panjang data yang terpotong per_page).
+            const total = (res as any)?.meta?.unread_total;
+            setAlertsUnread(typeof total === 'number' ? total : (Array.isArray(res.data) ? res.data.length : 0));
+          }
         } catch {
           /* badge opsional */
         }

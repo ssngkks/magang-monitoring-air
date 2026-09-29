@@ -66,7 +66,11 @@ String LoraProtocol::extractFieldWithFallback(const String &data, const String &
 
 #ifdef DEVICE_ROLE_GATEWAY
 #include "secrets.h"
-// Shared device key (audit.md §7), kompatibel nama lama.
+#include "FirebaseClient.h"
+// Token provisioning fallback (audit.md §7): dipakai hanya bila NVS belum
+// menyimpan token unik (§3.3). Auth utama lewat header X-Device-Key di
+// FirebaseClient; field body api_token/device_key di bawah dipertahankan
+// untuk kompatibilitas validator lama (diabaikan bila header valid).
 #if !defined(DEVICE_KEY) && defined(LOCAL_API_TOKEN)
 #define DEVICE_KEY LOCAL_API_TOKEN
 #endif
@@ -78,10 +82,16 @@ String LoraProtocol::buildFirebaseJson(float waterLevel, int turbidity, float ph
                                        int rssi, float snr, const AIResult &ai,
                                        const String &nodeId) {
   String targetNode = (nodeId.length() > 0) ? nodeId : String(KODE_NODE);
+  // Blueprint §3.3: pakai token unik NVS bila sudah ada (gateway maupun node
+  // yang diteruskan). Delegasi gateway di backend (§3.3) mengizinkan token
+  // gateway untuk data node, jadi header + body konsisten memakai token aktif.
+  String bodyKey = FirebaseClient::getDeviceToken();
+  bodyKey.trim();
+  if (bodyKey.length() < 16) bodyKey = String(DEVICE_KEY);
   String json = "{";
   json += "\"kode_node\":\"" + targetNode + "\",";
-  json += "\"api_token\":\"" + String(DEVICE_KEY) + "\",";
-  json += "\"device_key\":\"" + String(DEVICE_KEY) + "\",";
+  json += "\"api_token\":\"" + bodyKey + "\",";
+  json += "\"device_key\":\"" + bodyKey + "\",";
   json += "\"getaran\":" + String(vibration) + ",";
   json += "\"ketinggian_air\":" + String(waterLevel, 1) + ",";
   json += "\"turbidity\":" + String(turbidity) + ",";

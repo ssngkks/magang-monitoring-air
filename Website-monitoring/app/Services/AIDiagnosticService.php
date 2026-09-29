@@ -387,26 +387,30 @@ class AIDiagnosticService
         ];
     }
 
+    /**
+     * Format timestamp DB (UTC) ke label WIB. WAJIB konversi zona dulu —
+     * tanpa ->tz() jam tampil mundur 7 jam walau labelnya WIB.
+     */
     private function formatTimestamp($val): string
     {
         if ($val instanceof \DateTimeInterface) {
-            return Carbon::instance($val)->locale('id')->isoFormat('D MMM Y, HH:mm:ss').' WIB';
+            return Carbon::instance($val)->tz('Asia/Jakarta')->locale('id')->isoFormat('D MMM Y, HH:mm:ss').' WIB';
         }
 
         if (is_numeric($val)) {
             $sec = strlen((string) (int) $val) > 10 ? (int) ($val / 1000) : (int) $val;
 
-            return Carbon::createFromTimestamp($sec)->locale('id')->isoFormat('D MMM Y, HH:mm:ss').' WIB';
+            return Carbon::createFromTimestamp($sec, 'UTC')->tz('Asia/Jakarta')->locale('id')->isoFormat('D MMM Y, HH:mm:ss').' WIB';
         }
 
         if (is_string($val)) {
             try {
-                return Carbon::parse($val)->locale('id')->isoFormat('D MMM Y, HH:mm:ss').' WIB';
+                return Carbon::parse($val)->tz('Asia/Jakarta')->locale('id')->isoFormat('D MMM Y, HH:mm:ss').' WIB';
             } catch (\Exception $e) {
                 return $val;
             }
         }
 
-        return now()->locale('id')->isoFormat('D MMM Y, HH:mm:ss').' WIB';
+        return now()->tz('Asia/Jakarta')->locale('id')->isoFormat('D MMM Y, HH:mm:ss').' WIB';
     }
 }

@@ -8,7 +8,27 @@
 #include <HTTPClient.h>
 #include <LoRa.h>
 #include <mbedtls/sha256.h>
+#include "mbedtls/md.h"
 #include "FirebaseClient.h"
+#ifdef FEATURE_OTA_SIGNING
+#include "FirmwareVerify.h"
+#endif
+#include "LoraSecure.h"
+#include "certs.h"
+#include "secrets.h"
+
+#if !defined(DEVICE_KEY) && defined(LOCAL_API_TOKEN)
+#define DEVICE_KEY LOCAL_API_TOKEN
+#endif
+#ifndef DEVICE_KEY
+#define DEVICE_KEY "prototipe-shared-key-ganti-ini"
+#endif
+#ifndef LORA_AUTH_KEY
+#define LORA_AUTH_KEY "lora-secret-key-32-bytes-auth!"
+#endif
+#ifndef GATEWAY_ID
+#define GATEWAY_ID "ESP32-GW-01"
+#endif
 
 static const char *FUOTA_TEMP_FILE = "/fuota_temp.bin";
 
@@ -16,6 +36,9 @@ LoraFuotaGateway::LoraFuotaGateway()
   : state(FUOTA_GW_IDLE),
     currentTargetNode(""),
     currentVersion(""),
+    currentChecksum(""),
+    currentSignature(""),
+    currentNonce(0),
     totalFileSize(0),
     totalChunks(0),
     currentChunk(0),
@@ -76,9 +99,26 @@ bool LoraFuotaGateway::waitForAck(uint8_t expectedCmd, uint16_t expectedSeq, uns
   return false;
 }
 
-bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetNode, const String &expectedChecksum) {
+bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetNode, const String &expectedChecksum, const String &expectedSignature) {
   Serial.println("[FUOTA Gateway] Mengunduh binary firmware dari server ke LittleFS: " + url);
   reportOta("downloading", 10);
+
+#ifdef FEATURE_OTA_SIGNING
+  // Mode secure: TOLAK sejak awal bila manifest tanpa signature Ed25519.
+  // Checksum saja tidak cukup (dapat dipalsukan bersama manifest via MITM).
+  String sigCheck = expectedSignature;
+  sigCheck.trim();
+  if (sigCheck.length() != 128) {
+    Serial.println("[FUOTA Gateway] DITOLAK: manifest tanpa signature Ed25519 valid. Update dibatalkan.");
+    reportOta("failed", 0, "Manifest tanpa signature Ed25519 - update dibatalkan");
+    return false;
+  }
+#else
+  // Mode default (fitur signing mati): lewati syarat signature, kembali ke
+  // verifikasi checksum SHA256 saja seperti sebelum hardening. Kode Ed25519
+  // tidak ikut ter-compile (hemat flash) — lihat platformio.ini env _secure.
+  (void)expectedSignature;
+#endif
 
   // Hapus file lama jika ada
   if (LittleFS.exists(FUOTA_TEMP_FILE)) {
@@ -100,11 +140,37 @@ bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetN
   WiFiClient plainClient;
   plainClient.setTimeout(30);
   WiFiClientSecure secureClient;
-  secureClient.setInsecure();
-  secureClient.setTimeout(30);
-
-  bool isHttps = url.startsWith("https://");
-  bool beginOk = isHttps ? http.begin(secureClient, url) : http.begin(plainClient, url);
+  // TLS: mode secure → verifikasi CA via setCACert (BUKAN setInsecure);
+  // mode default → setInsecure() sadar-LAN (fase prototipe tertutup, Telegram
+  // tetap pin CA — lihat TelegramNotifier). Di-gate compile-time agar
+  // tidak ada overhead verifikasi di binary default.
+  String dlUrl = url;
+  if (dlUrl.indexOf("device=") == -1) {
+    dlUrl += (dlUrl.indexOf("?") == -1 ? "?" : "&") + String("device=") + String(GATEWAY_ID);
+  }
+  bool isHttps = dlUrl.startsWith("https://");
+  bool beginOk;
+  if (isHttps) {
+#ifdef FEATURE_TLS_PINNING
+    SecurityCerts::configureSecureClient(secureClient, LOCAL_SERVER_CA_CERT);
+#else
+    secureClient.setInsecure(); // Sadar: hanya untuk LAN tertutup fase prototipe
+#endif
+    secureClient.setTimeout(30);
+    beginOk = http.begin(secureClient, dlUrl);
+  } else {
+    beginOk = http.begin(plainClient, dlUrl);
+  }
+  // Blueprint §3.5: download firmware wajib auth token per-device (§3.3).
+  {
+    String tok = FirebaseClient::getDeviceToken();
+    tok.trim();
+    if (tok.length() < 16) tok = String(DEVICE_KEY);
+    http.addHeader("X-Device-Key", tok);
+    http.addHeader("X-API-KEY", tok);
+    http.addHeader("User-Agent", "ESP32-Gateway");
+    http.addHeader("ngrok-skip-browser-warning", "true");
+  }
 
   if (!beginOk) {
     file.close();
@@ -198,8 +264,6 @@ bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetN
 
     if (cleanCalc != cleanExp) {
       // SAFETY: file corrupt dilarang lanjut — hapus & batalkan (bukan sekadar warning).
-      // Node tidak memverifikasi SHA manifest, jadi gerbang ini satu-satunya penjamin
-      // keaslian file sebelum di-FUOTA-kan via LoRa.
       Serial.printf("[FUOTA Gateway] GAGAL: SHA256 tidak cocok! Server: %s, Aktual: %s\n",
                     cleanExp.c_str(), cleanCalc.c_str());
       Serial.println("[FUOTA Gateway] File corrupt, update DIBATALKAN demi keamanan.");
@@ -209,6 +273,27 @@ bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetN
     }
     Serial.println("[FUOTA Gateway] SHA256 VALID dan cocok 100% dengan server!");
   }
+
+  // Verifikasi signature Ed25519 atas SHA file SEBELUM disiarkan via LoRa
+  // (mode secure saja). Mode default: hanya SHA256 (perilaku pra-hardening).
+  // Node nantinya verifikasi ulang sendiri (jangan percaya gateway saja).
+#ifdef FEATURE_OTA_SIGNING
+  {
+    String calcHex = String(hashStr);
+    if (!FirmwareVerify::verifyDigestHex(calcHex, expectedSignature)) {
+      Serial.println("[FUOTA Gateway] DITOLAK: signature Ed25519 TIDAK VALID. Update dibatalkan.");
+      LittleFS.remove(FUOTA_TEMP_FILE);
+      reportOta("failed", 0, "Signature Ed25519 firmware tidak valid - update dibatalkan");
+      return false;
+    }
+    Serial.println("[FUOTA Gateway] Signature Ed25519 VALID. Binary terotentikasi.");
+    currentSignature = sigCheck;
+    currentChecksum = expectedChecksum;
+  }
+#else
+  currentSignature = "";
+  currentChecksum = expectedChecksum;
+#endif
 
   totalFileSize = actualSize;
   totalChunks = (totalFileSize + FUOTA_CHUNK_SIZE - 1) / FUOTA_CHUNK_SIZE;
@@ -221,6 +306,34 @@ bool LoraFuotaGateway::downloadToSpiffs(const String &url, const String &targetN
 int LoraFuotaGateway::sendAnnounce(const String &targetNode, const String &version, uint32_t size, uint16_t chunks) {
   Serial.println("[FUOTA Gateway] Mengirim pengumuman pembaruan (ANNOUNCE) ke Node: " + targetNode);
   lastNackStatus = 0;
+#ifdef FEATURE_LORA_AUTH
+  // Mode secure: nonce anti-replay per ANNOUNCE + HMAC8 atas
+  // (size||chunks||nonce||target||version). Kunci LoRa = provisioning
+  // LORA_AUTH_KEY (jalur turunan per-device siap di LoraSecure::effectiveKey,
+  // diaktifkan penuh setelah backend mendistribusikan kunci LoRa per-device).
+  currentNonce = LoraSecure::nextNonce();
+  String loraKey = String(LORA_AUTH_KEY);
+  String hmacHex = LoraSecure::fuotaAnnounceHmac(size, chunks, currentNonce, targetNode, version, loraKey);
+  uint8_t hmacRaw[8] = {0};
+  for (int i = 0; i < 8 && hmacHex.length() == 16; i++) {
+    hmacRaw[i] = (uint8_t)strtoul(hmacHex.substring(i * 2, i * 2 + 2).c_str(), nullptr, 16);
+  }
+#else
+  currentNonce = 0;
+  uint8_t hmacRaw[8] = {0};
+#endif
+#ifdef FEATURE_OTA_SIGNING
+  uint8_t sigRaw[64] = {0};
+  bool hasSig = (currentSignature.length() == 128);
+  if (hasSig) {
+    for (int i = 0; i < 64; i++) {
+      sigRaw[i] = (uint8_t)strtoul(currentSignature.substring(i * 2, i * 2 + 2).c_str(), nullptr, 16);
+    }
+  }
+#else
+  uint8_t sigRaw[64] = {0};
+  bool hasSig = false;
+#endif
 
   for (int attempt = 1; attempt <= FUOTA_MAX_RETRIES; attempt++) {
     LoRa.beginPacket();
@@ -255,6 +368,26 @@ int LoraFuotaGateway::sendAnnounce(const String &targetNode, const String &versi
       LoRa.write((uint8_t)version.charAt(i));
     }
 
+    // --- Ekstensi keamanan v1 (mode secure saja), tetap dalam 1 paket LoRa ---
+    // protoVer(1) + nonceLE4(4) + hmac8(8 mentah) + sigLen(1) + sig(0/64 mentah)
+    // Mode default: ANNOUNCE legacy (berhenti di version) seperti sebelum
+    // hardening — node lama/baru mode default menerima tanpa verifikasi extra.
+    // Node secure memvalidasi HMAC sebelum terima chunk apa pun.
+#ifdef FEATURE_LORA_AUTH
+    LoRa.write(FUOTA_PROTO_V1_SECURED);
+    LoRa.write((uint8_t)(currentNonce & 0xFF));
+    LoRa.write((uint8_t)((currentNonce >> 8) & 0xFF));
+    LoRa.write((uint8_t)((currentNonce >> 16) & 0xFF));
+    LoRa.write((uint8_t)((currentNonce >> 24) & 0xFF));
+    LoRa.write(hmacRaw, 8);
+#ifdef FEATURE_OTA_SIGNING
+    LoRa.write(hasSig ? (uint8_t)64 : (uint8_t)0);
+    if (hasSig) LoRa.write(sigRaw, 64);
+#else
+    LoRa.write((uint8_t)0); // tanpa signature di mode default
+#endif
+#endif
+
     LoRa.endPacket();
 
     Serial.printf("[FUOTA Gateway] ANNOUNCE terkirim (percobaan %d/%d). Menunggu ACK dari Node...\n",
@@ -267,6 +400,14 @@ int LoraFuotaGateway::sendAnnounce(const String &targetNode, const String &versi
     if (lastNackStatus == FUOTA_STATUS_ALREADY_LATEST) {
       Serial.println("[FUOTA Gateway] Node sudah menjalankan versi ini. Lewati flash.");
       return 2;
+    }
+    if (lastNackStatus == FUOTA_STATUS_AUTH_FAIL) {
+      Serial.println("[FUOTA Gateway] Node MENOLAK ANNOUNCE: HMAC/nonce tidak valid. Batal (cek LORA_AUTH_KEY).");
+      return 0;
+    }
+    if (lastNackStatus == FUOTA_STATUS_SIG_FAIL) {
+      Serial.println("[FUOTA Gateway] Node MENOLAK ANNOUNCE: signature tidak valid.");
+      return 0;
     }
     delay(500);
   }
@@ -527,7 +668,8 @@ void LoraFuotaGateway::sendAbort(const String &targetNode, const char *reason) {
 
 bool LoraFuotaGateway::startFuota(const String &targetNode, const String &fwUrl,
                                  const String &version, uint32_t expectedSize,
-                                 const String &expectedChecksum, uint32_t otaId) {
+                                 const String &expectedChecksum, uint32_t otaId,
+                                 const String &expectedSignature) {
   if (isBusy()) {
     Serial.println("[FUOTA Gateway] Proses FUOTA lain sedang berjalan!");
     return false;
@@ -536,15 +678,17 @@ bool LoraFuotaGateway::startFuota(const String &targetNode, const String &fwUrl,
   currentTargetNode = targetNode;
   currentVersion = version;
   currentOtaId = otaId;
+  currentSignature = "";
+  currentChecksum = "";
 
   Serial.println("\n========================================");
   Serial.println("[FUOTA Gateway] MEMULAI LORA FUOTA UNTUK NODE: " + targetNode);
   Serial.println("[FUOTA Gateway] Target Versi: " + version);
   Serial.println("========================================");
 
-  // 1. Download file dari server web ke SPIFFS
+  // 1. Download file dari server web ke SPIFFS (dengan verifikasi SHA + signature)
   state = FUOTA_GW_DOWNLOADING;
-  if (!downloadToSpiffs(fwUrl, targetNode, expectedChecksum)) {
+  if (!downloadToSpiffs(fwUrl, targetNode, expectedChecksum, expectedSignature)) {
     state = FUOTA_GW_ERROR;
     return false;
   }

@@ -9,14 +9,18 @@ interface NodeSelectorProps {
   onChange: (id: string) => void;
   id?: string;
   className?: string;
+  /** Tampilkan opsi "Semua Node" paling atas (nilai 'all'). */
+  showAllOption?: boolean;
+  allLabel?: string;
 }
 
-export function NodeSelector({ nodes, value, onChange, id = 'node-selector', className = '' }: NodeSelectorProps) {
+export function NodeSelector({ nodes, value, onChange, id = 'node-selector', className = '', showAllOption = false, allLabel = 'Semua Node' }: NodeSelectorProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
 
   const selected = nodes.find((n) => String(n.id) === value) ?? null;
+  const isAll = value === 'all';
 
   useEffect(() => {
     const onDocClick = (e: MouseEvent) => {
@@ -48,10 +52,18 @@ export function NodeSelector({ nodes, value, onChange, id = 'node-selector', cla
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex w-full sm:w-64 items-center justify-between gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 font-mono hover:border-blue-400 transition"
+        className="flex w-full sm:w-64 items-center justify-between gap-2 px-3 py-1.5 text-xs font-bold rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 font-mono hover:border-blue-400 transition"
       >
         <span className="flex items-center gap-2 truncate">
-          {selected ? (
+          {isAll ? (
+            <>
+              <span className="inline-block h-1.5 w-1.5 rounded-full shrink-0 bg-blue-500" />
+              <span className="truncate">{allLabel}</span>
+              <span className="hidden md:inline text-[10px] font-sans font-normal text-gray-400 truncate">
+                Rata-rata semua node sensor
+              </span>
+            </>
+          ) : selected ? (
             <>
               <span className={`inline-block h-1.5 w-1.5 rounded-full shrink-0 ${dotClass(isNodeOnline(selected))}`} />
               <span className="truncate">{getNodeCode(selected)}</span>
@@ -79,7 +91,35 @@ export function NodeSelector({ nodes, value, onChange, id = 'node-selector', cla
             />
           </div>
           <ul role="listbox" className="max-h-56 overflow-y-auto py-1">
-            {filtered.length === 0 && (
+            {showAllOption && (q === '' || 'semua node'.includes(q) || 'all'.includes(q)) && (
+              <li key="__all">
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={isAll}
+                  onClick={() => {
+                    onChange('all');
+                    setOpen(false);
+                    setQuery('');
+                  }}
+                  className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-blue-50 dark:hover:bg-blue-950/40 transition ${
+                    isAll ? 'bg-blue-50/60 dark:bg-blue-950/40' : ''
+                  }`}
+                >
+                  <span className="inline-block h-1.5 w-1.5 rounded-full shrink-0 bg-blue-500" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-bold text-gray-900 dark:text-white truncate">
+                      {allLabel}
+                    </span>
+                    <span className="block text-[10px] text-gray-400 truncate">
+                      Rata-rata semua node sensor
+                    </span>
+                  </span>
+                  {isAll && <Check className="h-3.5 w-3.5 text-blue-600 shrink-0" />}
+                </button>
+              </li>
+            )}
+            {filtered.length === 0 && !isAll && (
               <li className="px-3 py-4 text-center text-[11px] text-gray-400">Tidak ada node cocok.</li>
             )}
             {filtered.map((n) => {

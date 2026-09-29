@@ -149,7 +149,9 @@ export function Layout() {
       try {
         const response = await api.alerts('is_read=0&per_page=1');
         if (isMounted) {
-          const count = response?.meta?.total ?? (response?.data ? response.data.length : 0);
+          // Pakai total sebenarnya dari server (bukan panjang data yang terpotong per_page).
+          const total = (response as any)?.meta?.unread_total;
+          const count = typeof total === 'number' ? total : (response?.data ? response.data.length : 0);
           setUnreadAlertCount(count);
         }
       } catch (error) {
@@ -644,6 +646,11 @@ export function Layout() {
               className="relative rounded-lg p-2 hover:bg-gray-100 dark:hover:bg-gray-800"
             >
               <Bell className="h-5 w-5" />
+              {unreadAlertCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold text-white">
+                  {unreadAlertCount > 99 ? '99+' : unreadAlertCount}
+                </span>
+              )}
             </NavLink>
 
             {/* Profile Icon + Dropdown — tampil di SEMUA breakpoint */}

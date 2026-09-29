@@ -5,9 +5,23 @@
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include <LittleFS.h>
+#include <Update.h>
 #include "secrets.h"
+#include "certs.h"
 #include "FirebaseClient.h"
 #include "LoraFuotaGateway.h"
+#ifdef FEATURE_OTA_SIGNING
+#include "FirmwareVerify.h"
+#endif
+#include "mbedtls/sha256.h"
+
+// Provisioning fallback bila secrets.h belum mendefinisikan DEVICE_KEY.
+#if !defined(DEVICE_KEY) && defined(LOCAL_API_TOKEN)
+#define DEVICE_KEY LOCAL_API_TOKEN
+#endif
+#ifndef DEVICE_KEY
+#define DEVICE_KEY "prototipe-shared-key-ganti-ini"
+#endif
 
 #ifndef CURRENT_FW_VERSION
 #define CURRENT_FW_VERSION "1.0.0"
@@ -106,23 +120,41 @@ static uint32_t extractJsonUint(const String &json, const String &key) {
 
 static bool fetchManifest(const String &url, String &version, String &fwUrl,
                          bool &updateAvailable, String &status,
-                         uint32_t &fileSize, String &checksum, uint32_t &otaId) {
+                         uint32_t &fileSize, String &checksum, uint32_t &otaId,
+                         String &signature) {
   HTTPClient http;
   http.setTimeout(10000);
 
-  static WiFiClientSecure secClient;
+  WiFiClient plainClient;
+  plainClient.setTimeout(10);
+  WiFiClientSecure secClient;
   bool isHttps = url.startsWith("https://");
   if (isHttps) {
+#ifdef FEATURE_TLS_PINNING
+    // Mode secure: verifikasi sertifikat (pin CA), BUKAN setInsecure().
+    SecurityCerts::configureSecureClient(secClient, LOCAL_SERVER_CA_CERT);
+#else
+    // Mode default: setInsecure() sadar-LAN untuk fase prototipe tertutup.
+    // Telegram TIDAK ikut flag ini (tetap pin DigiCert — domain publik).
     secClient.setInsecure();
+#endif
     secClient.setTimeout(10);
     secClient.setHandshakeTimeout(15);
     http.begin(secClient, url);
   } else {
-    http.begin(url);
+    http.begin(plainClient, url);
   }
 
   http.addHeader("User-Agent", "ESP32-Gateway");
   http.addHeader("ngrok-skip-browser-warning", "true");
+  // Blueprint §3.5: manifest OTA wajib auth token per-device (§3.3).
+  {
+    String tok = FirebaseClient::getDeviceToken();
+    tok.trim();
+    if (tok.length() < 16) tok = String(DEVICE_KEY); // fallback provisioning (hello pertama)
+    http.addHeader("X-Device-Key", tok);
+    http.addHeader("X-API-KEY", tok);
+  }
 
   int code = http.GET();
   if (code != 200) {
@@ -146,6 +178,9 @@ static bool fetchManifest(const String &url, String &version, String &fwUrl,
   status = extractJsonString(body, "status");
   fileSize = extractJsonUint(body, "file_size");
   checksum = extractJsonString(body, "checksum");
+  if (checksum.length() == 0) checksum = extractJsonString(body, "checksum_sha256");
+  signature = extractJsonString(body, "signature_ed25519");
+  if (signature.length() == 0) signature = extractJsonString(body, "signature");
   otaId = extractJsonUint(body, "ota_id");
 
   return (version.length() > 0 && fwUrl.length() > 0);
@@ -206,12 +241,12 @@ void OtaUpdater::checkForUpdate() {
 
   // --- CEK NODE SENSOR DULU (prioritas utama - LoRa FUOTA) ---
   static String lastFlashedNodeVersion = "";
-  String nodeVer, nodeFwUrl, nodeStatus, nodeChecksum;
+  String nodeVer, nodeFwUrl, nodeStatus, nodeChecksum, nodeSig;
   bool nodeUpdateAvail = false;
   uint32_t nodeFileSize = 0;
   uint32_t nodeOtaId = 0;
 
-  if (fetchManifest(fbNodeUrl, nodeVer, nodeFwUrl, nodeUpdateAvail, nodeStatus, nodeFileSize, nodeChecksum, nodeOtaId)) {
+  if (fetchManifest(fbNodeUrl, nodeVer, nodeFwUrl, nodeUpdateAvail, nodeStatus, nodeFileSize, nodeChecksum, nodeOtaId, nodeSig)) {
     if (nodeUpdateAvail && (nodeStatus == "pending" || nodeStatus == "installing")) {
       if (nodeVer.length() > 0 && nodeVer == lastFlashedNodeVersion) {
         Serial.printf("[OTA] Node sudah sukses diflash ke versi %s sebelumnya. Tandai selesai di RTDB.\n",
@@ -222,7 +257,9 @@ void OtaUpdater::checkForUpdate() {
 
       Serial.printf("[OTA] Ditemukan jadwal update LoRa FUOTA untuk NODE (%s) -> Versi: %s (job #%u)\n",
                     KODE_NODE, nodeVer.c_str(), nodeOtaId);
-      if (fuotaGateway.startFuota(KODE_NODE, nodeFwUrl, nodeVer, nodeFileSize, nodeChecksum, nodeOtaId)) {
+      // Blueprint §3.4: gateway WAJIB teruskan signature ke FUOTA; binary tanpa
+      // signature valid DITOLAK di downloadToSpiffs (tidak disiarkan via LoRa).
+      if (fuotaGateway.startFuota(KODE_NODE, nodeFwUrl, nodeVer, nodeFileSize, nodeChecksum, nodeOtaId, nodeSig)) {
         lastFlashedNodeVersion = nodeVer;
       }
       return; // Sibuk LoRa FUOTA, skip gateway check
@@ -230,12 +267,12 @@ void OtaUpdater::checkForUpdate() {
   }
 
   // --- CEK GATEWAY SELF-UPDATE (via WiFi, hanya jika tidak ada node pending) ---
-  String gwVer, gwFwUrl, gwStatus, gwChecksum;
+  String gwVer, gwFwUrl, gwStatus, gwChecksum, gwSig;
   bool gwUpdateAvail = false;
   uint32_t gwFileSize = 0;
   uint32_t gwOtaId = 0;
 
-  if (fetchManifest(fbGwUrl, gwVer, gwFwUrl, gwUpdateAvail, gwStatus, gwFileSize, gwChecksum, gwOtaId)) {
+  if (fetchManifest(fbGwUrl, gwVer, gwFwUrl, gwUpdateAvail, gwStatus, gwFileSize, gwChecksum, gwOtaId, gwSig)) {
     if (gwUpdateAvail && gwStatus == "pending") {
       Serial.printf("[OTA] Ditemukan jadwal update WiFi untuk GATEWAY (%s) -> Versi: %s\n",
                     GATEWAY_ID, gwVer.c_str());
@@ -248,59 +285,162 @@ void OtaUpdater::checkForUpdate() {
 
       } else {
         Serial.println("[OTA] Menjalankan update WiFi internal Gateway dari: " + gwFwUrl);
-        // Catat dulu sebelum flash: bila httpUpdate me-reboot sendiri / crash,
-        // laporan success dikirim dari boot berikut (reportPendingAfterReboot).
-        writePendingOta(gwVer, gwOtaId);
-        FirebaseClient::updateOtaStatus(GATEWAY_ID, "downloading", 30, "", "", gwOtaId);
-
-        bool isHttps = gwFwUrl.startsWith("https://");
-        t_httpUpdate_return result;
-        if (isHttps) {
-          WiFiClientSecure secClient;
-          secClient.setInsecure();
-          secClient.setTimeout(60);
-          result = httpUpdate.update(secClient, gwFwUrl);
+#ifdef FEATURE_OTA_SIGNING
+        // Mode secure: TOLAK binary tanpa signature valid SEBELUM flash.
+        // Checksum saja tidak cukup (bisa dipalsukan bersama manifest via MITM).
+        if (gwSig.length() != 128) {
+          Serial.println("[OTA] DITOLAK: manifest tanpa signature Ed25519 valid. Update dibatalkan.");
+          FirebaseClient::updateOtaStatus(GATEWAY_ID, "failed", 0, "Manifest tanpa signature Ed25519", "", gwOtaId);
         } else {
-          WiFiClient plainClient;
-          plainClient.setTimeout(60); // 60 detik cukup untuk 1MB di LAN
-          result = httpUpdate.update(plainClient, gwFwUrl);
-        }
+#else
+        // Mode default: lewati syarat signature (hemat flash, tanpa Crypto),
+        // kembali ke verifikasi checksum SHA256 saja seperti sebelum hardening.
+        {
+#endif
+          // Catat dulu sebelum flash: bila update me-reboot sendiri / crash,
+          // laporan success dikirim dari boot berikut (reportPendingAfterReboot).
+          writePendingOta(gwVer, gwOtaId);
+          FirebaseClient::updateOtaStatus(GATEWAY_ID, "downloading", 30, "", "", gwOtaId);
 
-        if (result == HTTP_UPDATE_OK) {
-          // httpUpdate mengembalikan OK berarti TIDAK auto-reboot: hapus penanda
-          // (laporan success dikirim di bawah), lalu restart manual.
-          clearPendingOta();
-          Serial.println("[OTA] Gateway berhasil update! Melaporkan status final...");
-          // Flash lama bisa memutus WiFi: sambungkan ulang dulu agar laporan
-          // success tidak hilang (job nyangkut "flashing" di dashboard).
-          if (WiFi.status() != WL_CONNECTED) {
-            Serial.println("[OTA] WiFi putus setelah flash, menyambung ulang...");
+          // Unduh dengan auth token + TLS terverifikasi, verifikasi SHA & signature,
+          // lalu flash dari file lokal (bukan httpUpdate langsung yang tanpa verifikasi).
+          String dlUrl = gwFwUrl;
+          if (dlUrl.indexOf("device=") == -1) {
+            dlUrl += (dlUrl.indexOf("?") == -1 ? "?" : "&") + String("device=") + String(GATEWAY_ID);
+          }
+          const char *GW_TMP = "/gw_update.bin";
+          if (LittleFS.exists(GW_TMP)) LittleFS.remove(GW_TMP);
+          bool dlOk = false;
+          {
+            HTTPClient http;
+            http.setTimeout(30000);
+            WiFiClient plainClient;
+            plainClient.setTimeout(30);
+            WiFiClientSecure secClient;
+            bool isHttps = dlUrl.startsWith("https://");
+            if (isHttps) {
+#ifdef FEATURE_TLS_PINNING
+              SecurityCerts::configureSecureClient(secClient, LOCAL_SERVER_CA_CERT);
+#else
+              secClient.setInsecure(); // Sadar-LAN (prototipe tertutup)
+#endif
+              secClient.setTimeout(60);
+              http.begin(secClient, dlUrl);
+            } else {
+              plainClient.setTimeout(60);
+              http.begin(plainClient, dlUrl);
+            }
+            String tok = FirebaseClient::getDeviceToken();
+            tok.trim();
+            if (tok.length() < 16) tok = String(DEVICE_KEY);
+            http.addHeader("X-Device-Key", tok);
+            http.addHeader("X-API-KEY", tok);
+            http.addHeader("User-Agent", "ESP32-Gateway");
+            http.addHeader("ngrok-skip-browser-warning", "true");
+            int code = http.GET();
+            if (code == 200) {
+              File f = LittleFS.open(GW_TMP, FILE_WRITE, true);
+              if (f) {
+                http.writeToStream(&f);
+                f.close();
+                dlOk = true;
+              }
+            } else {
+              Serial.printf("[OTA] Download gagal HTTP %d\n", code);
+            }
+            http.end();
+          }
+          bool verified = false;
+          if (dlOk) {
+            File vf = LittleFS.open(GW_TMP, FILE_READ);
+            if (vf) {
+              size_t sz = vf.size();
+              // Hitung SHA256 file.
+              mbedtls_sha256_context sctx;
+              mbedtls_sha256_init(&sctx);
+              mbedtls_sha256_starts(&sctx, 0);
+              uint8_t cbuf[256];
+              while (vf.available()) {
+                size_t r = vf.read(cbuf, sizeof(cbuf));
+                if (r == 0) break;
+                mbedtls_sha256_update(&sctx, cbuf, r);
+              }
+              uint8_t sout[32];
+              mbedtls_sha256_finish(&sctx, sout);
+              mbedtls_sha256_free(&sctx);
+              char hexStr[65];
+              for (int i = 0; i < 32; i++) sprintf(hexStr + i * 2, "%02x", sout[i]);
+              hexStr[64] = '\0';
+              String calcSha = String(hexStr);
+              String expSha = gwChecksum; expSha.trim(); expSha.toLowerCase();
+              calcSha.toLowerCase();
+              if (expSha.length() > 0 && calcSha != expSha) {
+                Serial.printf("[OTA] DITOLAK: SHA tidak cocok (server %s vs file %s)\n", expSha.c_str(), calcSha.c_str());
+#ifdef FEATURE_OTA_SIGNING
+              } else if (!FirmwareVerify::verifyDigestHex(calcSha, gwSig)) {
+                Serial.println("[OTA] DITOLAK: signature Ed25519 TIDAK VALID. Update dibatalkan.");
+              } else {
+                Serial.println("[OTA] SHA & signature Ed25519 VALID. Lanjut flash.");
+                verified = true;
+              }
+#else
+              } else {
+                Serial.println("[OTA] SHA VALID (mode default, tanpa verifikasi signature). Lanjut flash.");
+                verified = true;
+              }
+#endif
+              vf.close();
+              // Flash dari file terverifikasi.
+              if (verified) {
+                File ff = LittleFS.open(GW_TMP, FILE_READ);
+                if (ff && Update.begin(sz, U_FLASH)) {
+                  Update.writeStream(ff);
+                  ff.close();
+                  if (Update.end(true)) {
+                    clearPendingOta();
+                    Serial.println("[OTA] Gateway berhasil update terverifikasi! Melaporkan status final...");
+                    if (WiFi.status() != WL_CONNECTED) {
+                      Serial.println("[OTA] WiFi putus setelah flash, menyambung ulang...");
+                      WiFi.disconnect();
+                      delay(500);
+                      WiFi.reconnect();
+                      unsigned long t = millis();
+                      while (WiFi.status() != WL_CONNECTED && millis() - t < 8000) delay(200);
+                    }
+                    FirebaseClient::updateOtaStatus(GATEWAY_ID, "success", 100, "", gwVer, gwOtaId);
+                    LittleFS.remove(GW_TMP);
+                    delay(1500);
+                    Serial.println("[OTA] Rebooting...");
+                    ESP.restart();
+                    return;
+                  } else {
+                    Serial.print("[OTA] GAGAL Update.end(): ");
+                    Update.printError(Serial);
+                  }
+                } else {
+                  if (ff) ff.close();
+                  Serial.println("[OTA] GAGAL Update.begin() / buka file terverifikasi.");
+                }
+              }
+              LittleFS.remove(GW_TMP);
+            }
+          }
+          if (!verified) {
+            clearPendingOta();
+#ifdef FEATURE_OTA_SIGNING
+            FirebaseClient::updateOtaStatus(GATEWAY_ID, "failed", 0, "Verifikasi SHA/signature gagal", "", gwOtaId);
+#else
+            FirebaseClient::updateOtaStatus(GATEWAY_ID, "failed", 0, "Verifikasi SHA gagal", "", gwOtaId);
+#endif
+            Serial.println("[OTA] Menunggu WiFi recovery...");
             WiFi.disconnect();
-            delay(500);
+            delay(1000);
             WiFi.reconnect();
             unsigned long t = millis();
             while (WiFi.status() != WL_CONNECTED && millis() - t < 8000) delay(200);
+            if (WiFi.status() == WL_CONNECTED)
+              Serial.println("[OTA] WiFi reconnected.");
           }
-          FirebaseClient::updateOtaStatus(GATEWAY_ID, "success", 100, "", gwVer, gwOtaId);
-          delay(1500); // beri waktu respons server terbaca sebelum restart
-          Serial.println("[OTA] Rebooting...");
-          ESP.restart();
-          return;
-        } else {
-          clearPendingOta(); // gagal bersih: tidak ada yang perlu dilaporkan ulang
-          String err = httpUpdate.getLastErrorString();
-          Serial.printf("[OTA] GAGAL flash Gateway (%d): %s\n", httpUpdate.getLastError(), err.c_str());
-          FirebaseClient::updateOtaStatus(GATEWAY_ID, "failed", 0, err, "", gwOtaId);
-
-          // Reconnect WiFi agar stack bersih setelah timeout besar
-          Serial.println("[OTA] Menunggu WiFi recovery...");
-          WiFi.disconnect();
-          delay(1000);
-          WiFi.reconnect();
-          unsigned long t = millis();
-          while (WiFi.status() != WL_CONNECTED && millis() - t < 8000) delay(200);
-          if (WiFi.status() == WL_CONNECTED)
-            Serial.println("[OTA] WiFi reconnected.");
         }
       }
     }

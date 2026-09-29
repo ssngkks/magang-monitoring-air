@@ -52,6 +52,8 @@ class NodeRepository
             'capabilities' => $data['capabilities'] ?? null,
             'ip_address' => $data['ip_address'] ?? null,
             'hardware_id' => $data['hardware_id'] ?? null,
+            'wifi_ssid' => $data['wifi_ssid'] ?? null,
+            'wifi_channel' => $data['wifi_channel'] ?? null,
             'last_seen_at' => $data['last_seen_at'] ?? null,
         ]);
 

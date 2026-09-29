@@ -3,6 +3,8 @@
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <Preferences.h>
+#include "certs.h"
 #include "secrets.h"
 
 /* =========================================================================
@@ -34,15 +36,59 @@
 
 // =========================================================================
 // IMPLEMENTASI KOMUNIKASI SERVER LOKAL LAPTOP (MySQL & phpMyAdmin)
+// Blueprint §3.2/§3.3/§3.5: TLS terverifikasi + token unik per-device (NVS).
 // =========================================================================
 
-// Shared device key prototipe LAN (audit.md §7), kompatibel nama lama.
+// Provisioning key awal (audit.md §7): HANYA untuk hello pertama.
+// Setelah hello sukses, backend mengembalikan token unik yang disimpan di NVS
+// dan dipakai untuk semua request berikutnya. JANGAN hardcode token permanen.
 #if !defined(DEVICE_KEY) && defined(LOCAL_API_TOKEN)
 #define DEVICE_KEY LOCAL_API_TOKEN
 #endif
 #ifndef DEVICE_KEY
 #define DEVICE_KEY "prototipe-shared-key-ganti-ini"
 #endif
+
+// ---------- NVS token unik per-device (blueprint §3.3) ----------
+static Preferences sPrefs;
+static bool sPrefsBegun = false;
+
+void FirebaseClient::initPreferences() {
+  if (!sPrefsBegun) {
+    sPrefs.begin("watermon", false);
+    sPrefsBegun = true;
+  }
+}
+
+String FirebaseClient::getDeviceToken() {
+  initPreferences();
+  // Cek isKey dulu: getString() pada key yang belum ada men-spam log error
+  // "nvs_get_str len fail: NOT_FOUND" tiap ±15 detik (normal saat NVS kosong
+  // sebelum hello pertama sukses — bukan kerusakan).
+  if (!sPrefs.isKey("dev_token")) {
+    return "";
+  }
+  return sPrefs.getString("dev_token", "");
+}
+
+void FirebaseClient::setDeviceToken(const String &token) {
+  initPreferences();
+  if (token.length() == 0) {
+    sPrefs.remove("dev_token");
+  } else {
+    sPrefs.putString("dev_token", token);
+  }
+}
+
+// Kunci auth efektif: token unik NVS bila sudah ada, kalau belum pakai
+// provisioning DEVICE_KEY (hello pertama). Tidak pernah mengirim keduanya.
+static String activeAuthKey() {
+  FirebaseClient::initPreferences();
+  String t = FirebaseClient::getDeviceToken(); // isKey-guarded, tanpa spam log
+  t.trim();
+  if (t.length() >= 16) return t;
+  return String(DEVICE_KEY);
+}
 
 // Basis URL Laravel, mis. "http://192.168.1.10:8000" (tanpa trailing slash).
 static String localBaseUrl() {
@@ -56,7 +102,56 @@ static String localBaseUrl() {
   #endif
 }
 
-// POST JSON generik dengan dukungan http/https + auth header ganda.
+// Konfigurasi TLS (di-gate compile-time, blueprint susulan simplify-crypto):
+// - Env secure (FEATURE_TLS_PINNING nyala): HTTPS diverifikasi via pin CA
+//   (custom CA bila diisi, kalau tidak root CA publik). BUKAN setInsecure().
+// - Env default (flag mati): HTTPS pakai setInsecure() — keputusan SADAR untuk
+//   fase prototipe LAN tertutup (hemat flash tanpa kode verifikasi). Telegram
+//   TIDAK ikut flag ini (tetap pin DigiCert — domain publik, beda kelas risiko).
+// - HTTP LAN lokal: tanpa TLS di kedua mode (sadar & didokumentasikan).
+static void beginHttp(HTTPClient &http, const String &url, WiFiClient &plain, WiFiClientSecure &sec) {
+  bool isHttps = url.startsWith("https://");
+  if (isHttps) {
+#ifdef FEATURE_TLS_PINNING
+    // Pakai custom CA bila diisi (server lokal HTTPS self-signed), kalau tidak
+    // pakai root CA publik (ngrok/Telegram/dll.).
+    SecurityCerts::configureSecureClient(sec, LOCAL_SERVER_CA_CERT);
+#else
+    sec.setInsecure(); // Sadar: hanya untuk LAN tertutup fase prototipe
+#endif
+    sec.setTimeout(10);
+    sec.setHandshakeTimeout(15);
+    http.begin(sec, url);
+  } else {
+    http.begin(plain, url);
+  }
+}
+
+static void addAuthHeaders(HTTPClient &http) {
+  String key = activeAuthKey();
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Accept", "application/json");
+  http.addHeader("User-Agent", "ESP32-Gateway");
+  http.addHeader("X-Device-Key", key);   // auth utama: token unik per-device (§3.3)
+  http.addHeader("X-API-KEY", key);      // kompatibilitas server lama
+  http.addHeader("ngrok-skip-browser-warning", "true");
+}
+
+// Ambil field string sederhana dari JSON respons ("key":"value").
+static String extractRespString(const String &json, const String &key) {
+  String pat = "\"" + key + "\"";
+  int idx = json.indexOf(pat);
+  if (idx == -1) return "";
+  int colon = json.indexOf(":", idx + pat.length());
+  if (colon == -1) return "";
+  int qs = json.indexOf("\"", colon);
+  if (qs == -1) return "";
+  int qe = json.indexOf("\"", qs + 1);
+  if (qe == -1) return "";
+  return json.substring(qs + 1, qe);
+}
+
+// POST JSON generik dengan dukungan http/https + auth header token unik.
 static int postJson(const String &url, const String &payload) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[LOCAL SERVER] WiFi tidak terhubung, request dibatalkan.");
@@ -66,27 +161,35 @@ static int postJson(const String &url, const String &payload) {
   HTTPClient http;
   http.setTimeout(10000);
 
-  static WiFiClientSecure secClient;
-  bool isHttps = url.startsWith("https://");
-  if (isHttps) {
-    secClient.setInsecure();
-    secClient.setTimeout(10);
-    secClient.setHandshakeTimeout(15);
-    http.begin(secClient, url);
-  } else {
-    http.begin(url);
-  }
-
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Accept", "application/json");
-  http.addHeader("User-Agent", "ESP32-Gateway");
-  http.addHeader("X-Device-Key", DEVICE_KEY);   // auth utama (audit.md §7)
-  http.addHeader("X-API-KEY", DEVICE_KEY);      // kompatibilitas server lama
-  http.addHeader("ngrok-skip-browser-warning", "true");
+  WiFiClient plainClient;
+  plainClient.setTimeout(10);
+  WiFiClientSecure secClient;
+  beginHttp(http, url, plainClient, secClient);
+  addAuthHeaders(http);
 
   int httpCode = http.POST(payload);
   http.end();
   return httpCode;
+}
+
+// POST JSON yang juga mengembalikan body (dipakai hello untuk ambil device_token).
+static int postJsonWithBody(const String &url, const String &payload, String &bodyOut) {
+  bodyOut = "";
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[LOCAL SERVER] WiFi tidak terhubung, request dibatalkan.");
+    return -1;
+  }
+  HTTPClient http;
+  http.setTimeout(10000);
+  WiFiClient plainClient;
+  plainClient.setTimeout(10);
+  WiFiClientSecure secClient;
+  beginHttp(http, url, plainClient, secClient);
+  addAuthHeaders(http);
+  int code = http.POST(payload);
+  if (code > 0) bodyOut = http.getString();
+  http.end();
+  return code;
 }
 
 static void sendToLocalServer(const String &jsonPayload) {
@@ -104,23 +207,11 @@ static void sendToLocalServer(const String &jsonPayload) {
   String url = "http://" + String(LOCAL_SERVER_HOST) + ":" + String(LOCAL_SERVER_PORT) + "/api/sensor/store";
   #endif
 
-  static WiFiClientSecure secClient;
-  bool isHttps = url.startsWith("https://");
-  if (isHttps) {
-    secClient.setInsecure();
-    secClient.setTimeout(10);
-    secClient.setHandshakeTimeout(15);
-    http.begin(secClient, url);
-  } else {
-    http.begin(url);
-  }
-
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Accept", "application/json");
-  http.addHeader("User-Agent", "ESP32-Gateway");
-  http.addHeader("X-Device-Key", DEVICE_KEY);   // auth utama (audit.md §7)
-  http.addHeader("X-API-KEY", DEVICE_KEY);      // kompatibilitas server lama
-  http.addHeader("ngrok-skip-browser-warning", "true");
+  WiFiClient plainClient;
+  plainClient.setTimeout(10);
+  WiFiClientSecure secClient;
+  beginHttp(http, url, plainClient, secClient);
+  addAuthHeaders(http);
 
   int httpCode = http.POST(jsonPayload);
 
@@ -149,6 +240,8 @@ void FirebaseClient::sendHistory(const String &jsonPayload) {
 }
 
 // POST /api/devices/hello — SEKALI saat boot & WiFi connect (audit.md §5.1-§5.3).
+// Blueprint §3.3: kirim token NVS bila sudah punya (hello ulang), kalau belum
+// kirim provisioning DEVICE_KEY. Simpan device_token unik dari respons ke NVS.
 bool FirebaseClient::sendHello(const String &deviceId, const String &deviceRole,
                                const String &firmwareVersion, const String &capabilitiesCsv) {
   String url = localBaseUrl() + "/api/devices/hello";
@@ -171,30 +264,48 @@ bool FirebaseClient::sendHello(const String &deviceId, const String &deviceRole,
   }
   capsJson += "]";
 
+  String keyToSend = activeAuthKey();
   String payload = "{";
   payload += "\"device_id\":\"" + deviceId + "\",";
   payload += "\"device_role\":\"" + deviceRole + "\",";
-  payload += "\"device_key\":\"" + String(DEVICE_KEY) + "\",";
+  payload += "\"device_key\":\"" + keyToSend + "\",";
   payload += "\"firmware_version\":\"" + firmwareVersion + "\",";
   payload += "\"hardware_id\":\"" + WiFi.macAddress() + "\",";
   payload += "\"ip_address\":\"" + WiFi.localIP().toString() + "\",";
+  payload += "\"wifi_ssid\":\"" + WiFi.SSID() + "\",";
+  payload += "\"wifi_channel\":" + String(WiFi.channel()) + ",";
   payload += "\"capabilities\":" + capsJson;
   payload += "}";
 
-  int httpCode = postJson(url, payload);
+  String body;
+  int httpCode = postJsonWithBody(url, payload, body);
   Serial.printf("[HELLO] %s (%s) -> HTTP %d\n", deviceId.c_str(), deviceRole.c_str(), httpCode);
-  return (httpCode == 200 || httpCode == 202);
+  if (httpCode == 200 || httpCode == 202) {
+    // Backend mengembalikan token unik SEKALI di field device_token (§3.3).
+    // Simpan ke NVS agar hello/heartbeat/store berikutnya pakai token ini.
+    String newToken = extractRespString(body, "device_token");
+    newToken.trim();
+    if (newToken.length() >= 16) {
+      setDeviceToken(newToken);
+      Serial.println("[HELLO] Token unik per-device tersimpan di NVS.");
+    }
+    return true;
+  }
+  return false;
 }
 
 // POST /api/devices/heartbeat — tiap ±15 detik (audit.md §5.6).
+// Memakai token unik NVS (bukan provisioning), konsisten dengan verify.node.token.
 bool FirebaseClient::sendHeartbeat(const String &deviceId) {
   String url = localBaseUrl() + "/api/devices/heartbeat";
 
   String payload = "{";
   payload += "\"device_id\":\"" + deviceId + "\",";
-  payload += "\"device_key\":\"" + String(DEVICE_KEY) + "\",";
+  payload += "\"device_key\":\"" + activeAuthKey() + "\",";
   payload += "\"uptime\":" + String(millis() / 1000UL) + ",";
-  payload += "\"wifi_rssi\":" + String(WiFi.RSSI());
+  payload += "\"wifi_rssi\":" + String(WiFi.RSSI()) + ",";
+  payload += "\"wifi_ssid\":\"" + WiFi.SSID() + "\",";
+  payload += "\"wifi_channel\":" + String(WiFi.channel());
   payload += "}";
 
   int httpCode = postJson(url, payload);
@@ -219,23 +330,11 @@ void FirebaseClient::updateOtaStatus(const String &kodeNode, const String &statu
   String url = "http://" + String(LOCAL_SERVER_HOST) + ":" + String(LOCAL_SERVER_PORT) + "/api/firmware/ota/status";
   #endif
 
-  static WiFiClientSecure secClient;
-  bool isHttps = url.startsWith("https://");
-  if (isHttps) {
-    secClient.setInsecure();
-    secClient.setTimeout(10);
-    secClient.setHandshakeTimeout(15);
-    http.begin(secClient, url);
-  } else {
-    http.begin(url);
-  }
-
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Accept", "application/json");
-  http.addHeader("User-Agent", "ESP32-Gateway");
-  http.addHeader("X-Device-Key", DEVICE_KEY);   // auth utama (audit.md §7)
-  http.addHeader("X-API-KEY", DEVICE_KEY);      // kompatibilitas server lama
-  http.addHeader("ngrok-skip-browser-warning", "true");
+  WiFiClient plainClient;
+  plainClient.setTimeout(10);
+  WiFiClientSecure secClient;
+  beginHttp(http, url, plainClient, secClient);
+  addAuthHeaders(http);
 
   // Skema ganda agar cocok dengan validasi server (kode_node/device,
   // progress_percent/progress, error_message/error).

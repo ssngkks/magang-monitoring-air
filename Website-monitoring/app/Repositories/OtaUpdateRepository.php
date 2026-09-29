@@ -204,13 +204,26 @@ class OtaUpdateRepository
     }
 
     /**
-     * Riwayat deployment OTA (terbaru dulu) — tidak pernah dihapus saat
+     * Hapus seluruh baris riwayat untuk satu firmware (dipakai hapus paksa
+     * dari dashboard — audit ikut hilang, wajib konfirmasi ganda di UI).
+     */
+    public function deleteForFirmware(string|int $firmwareId): int
+    {
+        try {
+            return (int) OtaUpdate::where('firmware_id', $firmwareId)->delete();
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Riwayat deployment OTA (terbaru dulu) - tidak pernah dihapus saat
      * firmware baru diterapkan. Filter opsional per node / firmware.
      */
     public function getHistory(?string $nodeId = null, string|int|null $firmwareId = null, int $perPage = 20): array
     {
         try {
-            $query = OtaUpdate::with('firmware:id,version,name')
+            $query = OtaUpdate::with('firmware:id,version,name,target_device_model')
                 ->orderByDesc('scheduled_at')
                 ->orderByDesc('created_at');
             if ($nodeId !== null && $nodeId !== '') {
@@ -231,6 +244,7 @@ class OtaUpdateRepository
                     'firmware_id' => $row->firmware_id,
                     'firmware_version' => $row->firmware?->version,
                     'firmware_name' => $row->firmware?->name,
+                    'firmware_target_model' => $row->firmware?->target_device_model,
                     'status' => $row->status,
                     'progress_percent' => $row->progress_percent,
                     'error_message' => $row->error_message,

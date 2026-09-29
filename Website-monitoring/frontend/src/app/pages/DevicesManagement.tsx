@@ -50,6 +50,16 @@ import {
   OtaStatusItem,
 } from '../lib/api';
 import { ActionFeedbackModal, ActionFeedbackStatus } from '../components/ActionFeedbackModal';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '../components/ui/alert-dialog';
 import { DeviceHistoryPrototype } from '../components/DeviceHistoryPrototype';
 import { SectorMap } from '../components/SectorMap';
 
@@ -129,6 +139,31 @@ export function DevicesManagement() {
   const [otaHistory, setOtaHistory] = useState<OtaHistoryItem[]>([]);
   const [otaHistoryLoading, setOtaHistoryLoading] = useState(false);
 
+  // Dialog konfirmasi terpusat (tengah layar) — pengganti confirm() bawaan
+  // browser agar semua notifikasi konsisten di tengah web.
+  interface ConfirmRequest {
+    title: string;
+    message: string;
+    confirmText?: string;
+    danger?: boolean;
+    onConfirm: () => void;
+  }
+  const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null);
+  const requestConfirm = (req: ConfirmRequest) => setConfirmReq(req);
+
+  // Dialog hapus firmware paksa: butuh centang paham-risiko (konfirmasi ganda)
+  // bila firmware memiliki riwayat OTA yang akan ikut terhapus permanen.
+  const [fwDeleteTarget, setFwDeleteTarget] = useState<FirmwareItem | null>(null);
+  const [fwDeleteAck, setFwDeleteAck] = useState(false);
+  const [fwDeleteHistoryCount, setFwDeleteHistoryCount] = useState<number | null>(null);
+  const [fwDeleting, setFwDeleting] = useState(false);
+
+  /** Tampilan versi firmware: buang satu awalan v/V ganda ("vv1.0.6" → "v1.0.6"). */
+  const displayFwVersion = (v: unknown): string => {
+    const s = String(v ?? '').trim().replace(/^v+/i, '');
+    return s === '' ? '?' : `v${s}`;
+  };
+
   /** Normalisasi label versi: samakan "v1.0.2" dengan "1.0.2". */
   const normalizeFwVersion = (v: unknown): string => {
     const s = String(v ?? '').trim();
@@ -136,6 +171,26 @@ export function DevicesManagement() {
   };
 
   /** Badge warna untuk status repository firmware (sumber: backend). */
+  /** Penjelasan tiap status repositori (ditampilkan sebagai tooltip badge). */
+  const repoStatusHint = (status?: string | null): string => {
+    switch (status) {
+      case 'Terpasang':
+        return 'Terpasang = ada perangkat yang saat ini menjalankan firmware versi ini (tidak dapat dihapus).';
+      case 'Tersedia':
+        return 'Tersedia = sudah di-upload ke server tapi belum dipakai perangkat mana pun (siap disebarkan).';
+      case 'Versi Lama':
+        return 'Versi Lama = ada versi lebih baru untuk model yang sama.';
+      case 'Menunggu':
+        return 'Menunggu = ada job OTA antre untuk firmware ini.';
+      case 'Flashing':
+        return 'Flashing = sedang di-flash ke perangkat.';
+      case 'Gagal':
+        return 'Gagal = percobaan flash terakhir gagal.';
+      default:
+        return '';
+    }
+  };
+
   const repoStatusBadgeClass = (status?: string | null): string => {
     switch (status) {
       case 'Terpasang':
@@ -229,7 +284,13 @@ export function DevicesManagement() {
   // Safe Close Handlers with Unsaved Changes Confirmation (Tugas 3b)
   const handleCloseAddDevice = () => {
     const isDirty = Boolean(deviceForm.kode_node.trim() || deviceForm.device_name.trim());
-    if (isDirty && !window.confirm('Ada data yang belum disimpan di form perangkat. Yakin ingin menutup form?')) {
+    if (isDirty) {
+      requestConfirm({
+        title: 'Tutup Form?',
+        message: 'Ada data yang belum disimpan di form perangkat. Yakin ingin menutup form?',
+        confirmText: 'Tutup Tanpa Simpan',
+        onConfirm: () => setIsAddDeviceOpen(false),
+      });
       return;
     }
     setIsAddDeviceOpen(false);
@@ -237,7 +298,13 @@ export function DevicesManagement() {
 
   const handleCloseAddDeviceType = () => {
     const isDirty = Boolean(deviceTypeForm.name.trim() || deviceTypeForm.description.trim());
-    if (isDirty && !window.confirm('Ada data yang belum disimpan di form jenis perangkat. Yakin ingin menutup form?')) {
+    if (isDirty) {
+      requestConfirm({
+        title: 'Tutup Form?',
+        message: 'Ada data yang belum disimpan di form jenis perangkat. Yakin ingin menutup form?',
+        confirmText: 'Tutup Tanpa Simpan',
+        onConfirm: () => setIsAddDeviceTypeOpen(false),
+      });
       return;
     }
     setIsAddDeviceTypeOpen(false);
@@ -250,7 +317,13 @@ export function DevicesManagement() {
 
   const handleCloseAddLocation = () => {
     const isDirty = Boolean(locationForm.name.trim() || locationForm.code.trim());
-    if (isDirty && !window.confirm('Ada data yang belum disimpan di form sektor. Yakin ingin menutup form?')) {
+    if (isDirty) {
+      requestConfirm({
+        title: 'Tutup Form?',
+        message: 'Ada data yang belum disimpan di form sektor. Yakin ingin menutup form?',
+        confirmText: 'Tutup Tanpa Simpan',
+        onConfirm: () => setIsAddLocationOpen(false),
+      });
       return;
     }
     setIsAddLocationOpen(false);
@@ -262,7 +335,13 @@ export function DevicesManagement() {
 
   const handleCloseAddSensor = () => {
     const isDirty = Boolean(sensorForm.name.trim() || sensorForm.code.trim());
-    if (isDirty && !window.confirm('Ada data yang belum disimpan di form sensor. Yakin ingin menutup form?')) {
+    if (isDirty) {
+      requestConfirm({
+        title: 'Tutup Form?',
+        message: 'Ada data yang belum disimpan di form sensor. Yakin ingin menutup form?',
+        confirmText: 'Tutup Tanpa Simpan',
+        onConfirm: () => setIsAddSensorOpen(false),
+      });
       return;
     }
     setIsAddSensorOpen(false);
@@ -276,7 +355,13 @@ export function DevicesManagement() {
     // §10: jangan tutup paksa saat upload berjalan (tombol juga ter-disable).
     if (isUploadingFirmware) return;
     const isDirty = Boolean(firmwareForm.name.trim() || firmwareForm.version.trim() || firmwareForm.file);
-    if (isDirty && !window.confirm('Ada data yang belum disimpan di form upload firmware. Yakin ingin menutup form?')) {
+    if (isDirty) {
+      requestConfirm({
+        title: 'Tutup Form?',
+        message: 'Ada data yang belum disimpan di form upload firmware. Yakin ingin menutup form?',
+        confirmText: 'Tutup Tanpa Simpan',
+        onConfirm: () => setIsUploadFirmwareOpen(false),
+      });
       return;
     }
     setIsUploadFirmwareOpen(false);
@@ -351,29 +436,53 @@ export function DevicesManagement() {
   ]);
 
   // Load all initial data
+  // Refresh per kelompok tab: pindah tab selalu instan dari cache, data
+  // disegarkan diam-diam di belakang (tanpa spinner). Ini menjaga UX
+  // "buka sekali, semua tab langsung tampil" tanpa membanjiri server
+  // (sebelumnya 7 endpoint tiap 6 detik → antre di server single-thread).
+  const fetchDevicesGroup = async () => {
+    const [devRes, pendRes] = await Promise.all([
+      api.devices().catch(() => ({ data: [] })),
+      api.pendingDevices().catch(() => ({ data: [] })),
+    ]);
+    setDevices(devRes.data || []);
+    setPendingDevices(pendRes.data || []);
+  };
+
+  const fetchCatalogGroup = async () => {
+    const [locRes, typesRes, devTypesRes] = await Promise.all([
+      api.locations().catch(() => ({ data: [] })),
+      api.sensorTypes().catch(() => ({ data: [] })),
+      api.deviceTypes().catch(() => ({ data: [] })),
+    ]);
+    setLocations(locRes.data || []);
+    setSensorTypes(typesRes.data || []);
+    setDeviceTypes(devTypesRes.data || []);
+  };
+
+  const fetchFirmwareGroup = async () => {
+    const [firmRes, histRes] = await Promise.all([
+      api.firmwares().catch(() => ({ data: [] })),
+      api.otaHistory('per_page=20').catch(() => ({ data: [] })),
+    ]);
+    setFirmwares(firmRes.data || []);
+    setOtaHistory(histRes.data || []);
+    setOtaHistoryLoading(false);
+  };
+
+  const stampSyncTime = () => {
+    setLastSyncTime(new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+  };
+
   const loadData = async (isSilent = false) => {
     try {
-      if (!isSilent) setLoading(true);
-      if (!isSilent) setOtaHistoryLoading(true);
-      const [devRes, locRes, typesRes, firmRes, devTypesRes, pendRes, histRes] = await Promise.all([
-        api.devices().catch(() => ({ data: [] })),
-        api.locations().catch(() => ({ data: [] })),
-        api.sensorTypes().catch(() => ({ data: [] })),
-        api.firmwares().catch(() => ({ data: [] })),
-        api.deviceTypes().catch(() => ({ data: [] })),
-        api.pendingDevices().catch(() => ({ data: [] })),
-        api.otaHistory('per_page=20').catch(() => ({ data: [] })),
-      ]);
-
-      setDevices(devRes.data || []);
-      setLocations(locRes.data || []);
-      setSensorTypes(typesRes.data || []);
-      setFirmwares(firmRes.data || []);
-      setDeviceTypes(devTypesRes.data || []);
-      setPendingDevices(pendRes.data || []);
-      setOtaHistory(histRes.data || []);
-      setOtaHistoryLoading(false);
-      setLastSyncTime(new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      if (!isSilent) {
+        setLoading(true);
+        setOtaHistoryLoading(true);
+      }
+      // Prefetch penuh saat mount / refresh manual: semua tab siap instan.
+      await Promise.all([fetchDevicesGroup(), fetchCatalogGroup(), fetchFirmwareGroup()]);
+      stampSyncTime();
     } catch (e) {
       console.error('Gagal memuat data manajemen perangkat:', e);
     } finally {
@@ -381,14 +490,39 @@ export function DevicesManagement() {
     }
   };
 
+  const groupForTab = (tab: typeof activeTab): 'devices' | 'catalog' | 'firmware' => {
+    if (tab === 'firmware') return 'firmware';
+    if (tab === 'devices') return 'devices';
+    return 'catalog';
+  };
+
+  const refreshActiveTab = async () => {
+    try {
+      const g = groupForTab(activeTab);
+      if (g === 'devices') await fetchDevicesGroup();
+      else if (g === 'firmware') await Promise.all([fetchFirmwareGroup(), fetchDevicesGroup()]);
+      else await Promise.all([fetchCatalogGroup(), fetchDevicesGroup()]);
+      stampSyncTime();
+    } catch (e) {
+      console.error('Gagal menyegarkan tab:', e);
+    }
+  };
+
   useEffect(() => {
     loadData();
-    // Sinkronisasi otomatis berkala tiap 6 detik dengan database MySQL
-    const intervalId = setInterval(() => {
-      loadData(true);
-    }, 6000);
-    return () => clearInterval(intervalId);
   }, []);
+
+  useEffect(() => {
+    // Ganti tab → render instan dari cache + segarkan grupnya diam-diam.
+    // Interval 30 detik per-tab aktif; jeda saat tab browser disembunyikan.
+    refreshActiveTab();
+    const intervalId = setInterval(() => {
+      if (document.hidden) return;
+      refreshActiveTab();
+    }, 30000);
+    return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   // Load sensors for selected device
   const handleSelectDevice = async (device: DeviceItem) => {
@@ -427,16 +561,22 @@ export function DevicesManagement() {
   };
 
   const handleDeleteDeviceType = async (type: DeviceTypeItem) => {
-    if (!confirm(`Hapus jenis perangkat "${type.name}"?`)) return;
-
-    showFeedback('loading', 'Menghapus Jenis Perangkat...', 'Sedang memproses penghapusan...');
-    try {
-      await api.deleteDeviceType(type.id);
-      showFeedback('success', 'Berhasil', `Jenis perangkat "${type.name}" berhasil dihapus.`);
-      loadData();
-    } catch (err: any) {
-      showFeedback('error', 'Gagal Menghapus', err.message || 'Gagal menghapus jenis perangkat.');
-    }
+    requestConfirm({
+      title: `Hapus jenis perangkat "${type.name}"?`,
+      message: 'Jenis perangkat akan dihapus permanen dari daftar.',
+      confirmText: 'Hapus',
+      danger: true,
+      onConfirm: async () => {
+        showFeedback('loading', 'Menghapus Jenis Perangkat...', 'Sedang memproses penghapusan...');
+        try {
+          await api.deleteDeviceType(type.id);
+          showFeedback('success', 'Berhasil', `Jenis perangkat "${type.name}" berhasil dihapus.`);
+          loadData();
+        } catch (err: any) {
+          showFeedback('error', 'Gagal Menghapus', err.message || 'Gagal menghapus jenis perangkat.');
+        }
+      },
+    });
   };
 
   const handleOpenEditDeviceType = (dt: DeviceTypeItem) => {
@@ -593,16 +733,22 @@ export function DevicesManagement() {
   };
 
   const handleDeleteLocation = async (loc: LocationItem) => {
-    if (!confirm(`Apakah Anda yakin ingin menghapus sektor "${loc.name}"? Perangkat yang terhubung akan dilepas status lokasinya.`)) return;
-
-    showFeedback('loading', 'Menghapus Sektor...', 'Sedang memproses...');
-    try {
-      await api.deleteLocation(loc.id);
-      showFeedback('success', 'Berhasil', `Sektor "${loc.name}" berhasil dihapus.`);
-      loadData();
-    } catch (err: any) {
-      showFeedback('error', 'Gagal Menghapus Sektor', err.message || 'Gagal menghapus sektor.');
-    }
+    requestConfirm({
+      title: `Hapus sektor "${loc.name}"?`,
+      message: 'Perangkat yang terhubung akan dilepas status lokasinya.',
+      confirmText: 'Hapus',
+      danger: true,
+      onConfirm: async () => {
+        showFeedback('loading', 'Menghapus Sektor...', 'Sedang memproses...');
+        try {
+          await api.deleteLocation(loc.id);
+          showFeedback('success', 'Berhasil', `Sektor "${loc.name}" berhasil dihapus.`);
+          loadData();
+        } catch (err: any) {
+          showFeedback('error', 'Gagal Menghapus Sektor', err.message || 'Gagal menghapus sektor.');
+        }
+      },
+    });
   };
 
   const handleOpenAssignSector = (loc: LocationItem) => {
@@ -745,32 +891,44 @@ export function DevicesManagement() {
   };
 
   const handleIgnoreDevice = async (dev: PendingDevice) => {
-    if (!confirm(`Abaikan perangkat ${dev.kode_node}? Perangkat dinonaktifkan (bisa diaktifkan lagi), bukan dihapus.`)) return;
-    showFeedback('loading', 'Mengabaikan...', `Menonaktifkan ${dev.kode_node}...`);
-    try {
-      await api.ignoreDevice(dev.id);
-      showFeedback('success', 'Berhasil', `Perangkat ${dev.kode_node} diabaikan (nonaktif).`);
-      loadData();
-    } catch (err: any) {
-      showFeedback('error', 'Gagal Mengabaikan', err.message || 'Gagal mengabaikan perangkat.');
-    }
+    requestConfirm({
+      title: `Abaikan perangkat ${dev.kode_node}?`,
+      message: 'Perangkat dinonaktifkan (bisa diaktifkan lagi), bukan dihapus.',
+      confirmText: 'Abaikan',
+      danger: true,
+      onConfirm: async () => {
+        showFeedback('loading', 'Mengabaikan...', `Menonaktifkan ${dev.kode_node}...`);
+        try {
+          await api.ignoreDevice(dev.id);
+          showFeedback('success', 'Berhasil', `Perangkat ${dev.kode_node} diabaikan (nonaktif).`);
+          loadData();
+        } catch (err: any) {
+          showFeedback('error', 'Gagal Mengabaikan', err.message || 'Gagal mengabaikan perangkat.');
+        }
+      },
+    });
   };
 
   const handleDeleteDevice = async (deviceId: string | number, deviceCode: string) => {
-    if (!confirm(`Apakah Anda yakin ingin menghapus perangkat ${deviceCode}? Seluruh sensor dan data terkait akan ikut dihapus.`)) {
-      return;
-    }
-    showFeedback('loading', 'Menghapus Perangkat...', `Sedang menghapus perangkat ${deviceCode}...`);
-    try {
-      await api.deleteDevice(deviceId);
-      showFeedback('success', 'Berhasil', `Perangkat ${deviceCode} berhasil dihapus.`);
-      if (selectedDevice?.id === deviceId) {
-        setSelectedDevice(null);
-      }
-      loadData();
-    } catch (err: any) {
-      showFeedback('error', 'Gagal Menghapus', err.message || 'Gagal menghapus perangkat.');
-    }
+    requestConfirm({
+      title: `Hapus perangkat ${deviceCode}?`,
+      message: 'Seluruh sensor dan data terkait akan ikut dihapus permanen.',
+      confirmText: 'Hapus',
+      danger: true,
+      onConfirm: async () => {
+        showFeedback('loading', 'Menghapus Perangkat...', `Sedang menghapus perangkat ${deviceCode}...`);
+        try {
+          await api.deleteDevice(deviceId);
+          showFeedback('success', 'Berhasil', `Perangkat ${deviceCode} berhasil dihapus.`);
+          if (selectedDevice?.id === deviceId) {
+            setSelectedDevice(null);
+          }
+          loadData();
+        } catch (err: any) {
+          showFeedback('error', 'Gagal Menghapus', err.message || 'Gagal menghapus perangkat.');
+        }
+      },
+    });
   };
 
   // ==========================================
@@ -928,10 +1086,30 @@ export function DevicesManagement() {
           // Label sama dengan versi berjalan → tawarkan paksa (anti jebakan label).
           if (otaErr?.data?.code === 'same_version') {
             const occupied = otaErr?.data?.blocked?.map((b: any) => b.kode_node).join(', ') || 'perangkat target';
-            if (!window.confirm(`${otaErr.message || 'Perangkat sudah versi ini.'}\n\nPaksa flash ulang ${occupied}?`)) {
-              throw otaErr;
-            }
-            await api.triggerOtaMulti(newFw.id, uploadFirmwareTargetDevices, true);
+            requestConfirm({
+              title: 'Perangkat Sudah Versi Ini',
+              message: `${otaErr.message || 'Perangkat sudah versi ini.'} Paksa flash ulang ${occupied}?`,
+              confirmText: 'Paksa Flash',
+              danger: true,
+              onConfirm: async () => {
+                try {
+                  await api.triggerOtaMulti(newFw.id, uploadFirmwareTargetDevices, true);
+                  for (const devId of uploadFirmwareTargetDevices) {
+                    api.forceOtaCheck(devId).catch(() => {});
+                  }
+                  showFeedback('success', 'Berhasil', `Firmware ${firmwareForm.version} berhasil diunggah dan dipaksa ke ${uploadFirmwareTargetDevices.length} perangkat.`);
+                  if (newFw?.id) {
+                    setLastUploadSelection({ firmwareId: newFw.id, deviceIds: [...uploadFirmwareTargetDevices] });
+                  }
+                  setIsUploadFirmwareOpen(false);
+                  setUploadFirmwareTargetDevices([]);
+                  loadData();
+                } catch (err: any) {
+                  showFeedback('error', 'Gagal Mengunggah', err.message || 'Gagal mengunggah firmware.');
+                }
+              },
+            });
+            return;
           } else {
             throw otaErr;
           }
@@ -956,10 +1134,11 @@ export function DevicesManagement() {
     }
   };
 
-  const handleDownloadFirmware = async (fw: FirmwareItem) => {
-    showFeedback('loading', 'Mengunduh Firmware...', `Mengambil file asli firmware v${fw.version} dari server...`);
+  const handleDownloadHistoryFirmware = async (h: OtaHistoryItem) => {
+    const version = displayFwVersion(h.firmware_version);
+    showFeedback('loading', 'Mengunduh Firmware...', `Mengambil file firmware ${version} dari server...`);
     try {
-      const { blob, filename } = await api.downloadFirmware(fw.id);
+      const { blob, filename } = await api.downloadFirmware(h.firmware_id);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -968,7 +1147,7 @@ export function DevicesManagement() {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-      showFeedback('success', 'Berhasil', `File asli firmware v${fw.version} (${filename}) berhasil diunduh.`);
+      showFeedback('success', 'Berhasil', `File firmware ${version} (${filename}) berhasil diunduh.`);
     } catch (err: any) {
       showFeedback('error', 'Gagal Mengunduh', err.message || 'Gagal mengunduh file firmware.');
     }
@@ -1040,11 +1219,17 @@ export function DevicesManagement() {
       // Blokir label-sama: tawarkan paksa flash ulang (kasus curiga flash corrupt).
       if (err?.data?.code === 'same_version' && !force) {
         const occupied = err?.data?.blocked?.map((b: any) => b.kode_node).join(', ') || 'perangkat target';
-        if (window.confirm(`${err.message || 'Perangkat sudah versi ini.'}\n\nPaksa flash ulang ${occupied}?`)) {
-          setIsUpgradingFromRepo(false);
-          await handleExecuteUpgradeMulti(instant, true);
-          return;
-        }
+        requestConfirm({
+          title: 'Perangkat Sudah Versi Ini',
+          message: `${err.message || 'Perangkat sudah versi ini.'} Paksa flash ulang ${occupied}?`,
+          confirmText: 'Paksa Flash',
+          danger: true,
+          onConfirm: () => {
+            setIsUpgradingFromRepo(false);
+            handleExecuteUpgradeMulti(instant, true);
+          },
+        });
+        return;
       }
       showFeedback('error', 'Gagal Memulai Upgrade', err.message || 'Gagal memulai upgrade firmware.');
     } finally {
@@ -1115,16 +1300,36 @@ export function DevicesManagement() {
     }
   };
 
-  const handleDeleteFirmware = async (fw: FirmwareItem) => {
-    if (!confirm(`Hapus firmware ${fw.version}? File biner akan dibersihkan dari penyimpanan.`)) return;
+  const handleDeleteFirmware = (fw: FirmwareItem) => {
+    // Dialog tengah (bukan confirm() browser). Bila firmware punya riwayat OTA,
+    // penghapusan butuh centang paham-risiko + dikirim dengan force=1.
+    setFwDeleteTarget(fw);
+    setFwDeleteAck(false);
+    setFwDeleteHistoryCount(null);
+  };
 
+  const executeDeleteFirmware = async (force: boolean) => {
+    const fw = fwDeleteTarget;
+    if (!fw || fwDeleting) return;
+    setFwDeleting(true);
     showFeedback('loading', 'Menghapus Firmware...', 'Sedang memproses...');
     try {
-      await api.deleteFirmware(fw.id);
+      await api.deleteFirmware(fw.id, force);
+      setFwDeleteTarget(null);
       showFeedback('success', 'Berhasil', `Firmware ${fw.version} berhasil dihapus.`);
       loadData();
     } catch (err: any) {
-      showFeedback('error', 'Gagal Menghapus', err.message || 'Gagal menghapus firmware.');
+      const code = err?.data?.code;
+      if (code === 'has_history' && !force) {
+        // Server tahu jumlah riwayat pasti — tampilkan di dialog + wajib centang.
+        setFwDeleteHistoryCount(typeof err?.data?.history_count === 'number' ? err.data.history_count : -1);
+        showFeedback('error', 'Perlu Konfirmasi', err.message || 'Firmware memiliki riwayat OTA.');
+      } else {
+        setFwDeleteTarget(null);
+        showFeedback('error', 'Gagal Menghapus', err.message || 'Gagal menghapus firmware.');
+      }
+    } finally {
+      setFwDeleting(false);
     }
   };
 
@@ -1155,6 +1360,63 @@ export function DevicesManagement() {
         onClose={closeFeedback}
       />
 
+      {/* Dialog konfirmasi terpusat (tengah layar) — pengganti confirm() browser */}
+      <AlertDialog open={!!confirmReq} onOpenChange={(open) => { if (!open) setConfirmReq(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmReq?.title}</AlertDialogTitle>
+            <AlertDialogDescription>{confirmReq?.message}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Batal</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { confirmReq?.onConfirm(); setConfirmReq(null); }}
+              className={confirmReq?.danger ? 'bg-red-600 hover:bg-red-700 focus:ring-red-600' : ''}
+            >
+              {confirmReq?.confirmText || 'Ya, Lanjutkan'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Dialog hapus firmware: konfirmasi ganda bila ada riwayat OTA */}
+      <AlertDialog open={!!fwDeleteTarget} onOpenChange={(open) => { if (!open && !fwDeleting) { setFwDeleteTarget(null); setFwDeleteAck(false); setFwDeleteHistoryCount(null); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Hapus firmware {fwDeleteTarget?.version}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              File biner akan dibersihkan dari penyimpanan server.
+              {(fwDeleteTarget?.latest_ota || (fwDeleteHistoryCount ?? 0) > 0) && (
+                <span className="block mt-2 font-semibold text-amber-600 dark:text-amber-400">
+                  Firmware ini memiliki{fwDeleteHistoryCount !== null && fwDeleteHistoryCount >= 0 ? ` ${fwDeleteHistoryCount}` : ''} riwayat OTA yang akan ikut terhapus permanen dan tidak bisa dikembalikan.
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {(fwDeleteTarget?.latest_ota || (fwDeleteHistoryCount ?? 0) !== 0) && (
+            <label className="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={fwDeleteAck}
+                onChange={(e) => setFwDeleteAck(e.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-red-600"
+              />
+              Saya paham riwayat OTA firmware ini akan ikut hilang permanen.
+            </label>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={fwDeleting}>Batal</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={fwDeleting || ((fwDeleteTarget?.latest_ota || (fwDeleteHistoryCount ?? 0) !== 0) && !fwDeleteAck)}
+              onClick={() => executeDeleteFirmware(!!fwDeleteTarget?.latest_ota || (fwDeleteHistoryCount ?? 0) !== 0)}
+              className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
+            >
+              {fwDeleting ? 'Menghapus...' : 'Hapus Permanen'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-gray-100 dark:border-gray-800">
         <div>
@@ -1163,6 +1425,9 @@ export function DevicesManagement() {
           </h1>
           <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1 pl-3">
             Konfigurasi dinamis Perangkat ESP32, Jenis Perangkat, Sektor Lokasi, dan Firmware OTA
+          </p>
+          <p className="text-xs font-bold text-gray-800 dark:text-gray-100 font-mono mt-1 pl-3">
+            Update: {lastSyncTime ? `${lastSyncTime} WIB` : 'Belum pernah sinkron'}
           </p>
         </div>
 
@@ -1176,7 +1441,6 @@ export function DevicesManagement() {
             title="Muat ulang seluruh data dari server"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            <span>{lastSyncTime ? `Sinkron: ${lastSyncTime}` : 'Sinkronisasi'}</span>
           </button>
         </div>
       </div>
@@ -1886,7 +2150,7 @@ export function DevicesManagement() {
                           <div className="font-semibold text-gray-900 dark:text-white mt-0.5">{fw.name}</div>
                           <div className="flex flex-wrap items-center gap-1 mt-1">
                             {fw.repo_status && (
-                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${repoStatusBadgeClass(fw.repo_status)}`}>
+                              <span title={repoStatusHint(fw.repo_status)} className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${repoStatusBadgeClass(fw.repo_status)}`}>
                                 {fw.repo_status}
                               </span>
                             )}
@@ -1963,7 +2227,6 @@ export function DevicesManagement() {
                                     +{(fw.active_ota_count || 0) - 1} job lain mengantre
                                   </div>
                                 )}
-                                {fw.latest_ota.completed_at && <div>Selesai: {formatDateTime(fw.latest_ota.completed_at)}</div>}
                                 {fw.latest_ota.scheduled_at && !fw.latest_ota.completed_at && <div>Dijadwalkan: {formatDateTime(fw.latest_ota.scheduled_at)}</div>}
                                 {fw.latest_ota.updated_at && !fw.latest_ota.completed_at && (
                                   <div>
@@ -1999,15 +2262,7 @@ export function DevicesManagement() {
 
                         <td className="px-4 py-3.5 text-right">
                           <div className="flex items-center justify-end gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadFirmware(fw)}
-                              disabled={!isFileAvailable(fw)}
-                              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                              title={isFileAvailable(fw) ? `Download file asli firmware v${fw.version}` : 'File tidak tersedia di server'}
-                            >
-                              <Download className="w-3.5 h-3.5" /> Download
-                            </button>
+                            {/* Unduh file hanya dari Riwayat Deploy OTA (satu fitur, satu tombol) */}
                             {(fw.is_latest_for_model ?? true) && (hasVersionDrift(fw) || devices.length === 0) && (
                               <button
                                 type="button"
@@ -2041,12 +2296,12 @@ export function DevicesManagement() {
                             <button
                               type="button"
                               onClick={() => handleDeleteFirmware(fw)}
-                              disabled={(fw.installed_on?.length ?? 0) > 0 || !!fw.latest_ota}
+                              disabled={(fw.installed_on?.length ?? 0) > 0}
                               className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-gray-400 disabled:hover:bg-transparent"
                               title={(fw.installed_on?.length ?? 0) > 0
                                 ? `Terpasang di ${(fw.installed_on || []).join(', ')} — tidak dapat dihapus`
                                 : fw.latest_ota
-                                  ? 'Memiliki riwayat OTA — tidak dapat dihapus'
+                                  ? 'Hapus firmware (riwayat OTA ikut hilang — perlu konfirmasi ganda)'
                                   : 'Hapus firmware'}
                             >
                               <Trash2 className="w-4 h-4" />
@@ -2075,35 +2330,42 @@ export function DevicesManagement() {
             <div className="overflow-x-auto max-h-[320px] overflow-y-auto mt-3">
               <table className="w-full text-left text-xs">
                 <thead className="bg-gray-50 dark:bg-gray-800/80 text-gray-500 font-semibold border-y border-gray-100 dark:border-gray-800 sticky top-0 z-10">
-                  <tr>
-                    <th className="px-4 py-3">Waktu</th>
-                    <th className="px-4 py-3">Perangkat</th>
-                    <th className="px-4 py-3">Firmware</th>
-                    <th className="px-4 py-3">Status</th>
-                    <th className="px-4 py-3">Hasil</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                  {otaHistoryLoading ? (
                     <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-gray-500">Memuat riwayat...</td>
+                      <th className="px-4 py-3">Waktu</th>
+                      <th className="px-4 py-3">Perangkat</th>
+                      <th className="px-4 py-3">Firmware</th>
+                      <th className="px-4 py-3">Target Model</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">Hasil</th>
+                      <th className="px-4 py-3 text-right">Unduh</th>
                     </tr>
-                  ) : otaHistory.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-gray-500">Belum ada riwayat deployment OTA.</td>
-                    </tr>
-                  ) : (
-                    otaHistory.map((h) => (
-                      <tr key={h.id} className="hover:bg-gray-50/50 dark:hover:bg-gray-800/40 transition-colors">
-                        <td className="px-4 py-3 text-gray-600 dark:text-gray-300 whitespace-nowrap">
-                          {formatDateTime(h.completed_at || h.scheduled_at || h.created_at)}
-                        </td>
-                        <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-white">
-                          {h.kode_node || h.node_id || '-'}
-                        </td>
-                        <td className="px-4 py-3 font-mono text-blue-600 dark:text-blue-400 font-semibold">
-                          v{h.firmware_version || '?'}
-                        </td>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                    {otaHistoryLoading ? (
+                      <tr>
+                        <td colSpan={7} className="px-4 py-8 text-center text-gray-500">Memuat riwayat...</td>
+                      </tr>
+                    ) : otaHistory.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="px-4 py-8 text-center text-gray-500">Belum ada riwayat deployment OTA.</td>
+                      </tr>
+                    ) : (
+                      otaHistory.map((h) => (
+                        <tr key={h.id} className="hover:bg-gray-50/50 dark:hover:bg-gray-800/40 transition-colors">
+                          <td className="px-4 py-3 text-gray-600 dark:text-gray-300 whitespace-nowrap">
+                            {formatDateTime(h.completed_at || h.scheduled_at || h.created_at)}
+                          </td>
+                          <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-white">
+                            {h.kode_node || h.node_id || '-'}
+                          </td>
+                          <td className="px-4 py-3 font-mono text-blue-600 dark:text-blue-400 font-semibold">
+                            {displayFwVersion(h.firmware_version)}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900/50">
+                              {h.firmware_target_model || 'Semua Jenis'}
+                            </span>
+                          </td>
                         <td className="px-4 py-3">
                           {h.status === 'success' ? (
                             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">Selesai (100%)</span>
@@ -2121,6 +2383,16 @@ export function DevicesManagement() {
                             : h.status === 'success'
                               ? `OTA selesai (${h.progress_percent || 100}%)`
                               : `Progres ${h.progress_percent || 0}%`}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadHistoryFirmware(h)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition cursor-pointer"
+                            title={`Download file firmware ${displayFwVersion(h.firmware_version)}`}
+                          >
+                            <Download className="w-3.5 h-3.5" /> Unduh
+                          </button>
                         </td>
                       </tr>
                     ))

@@ -46,6 +46,9 @@ export function WaterQualityDetail() {
   const [chartData, setChartData] = useState<any[]>([]);
   const [tableRows, setTableRows] = useState<any[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
+  // Rentang efektif: bila 'today' kosong, otomatis tampilkan '7d' + banner
+  // agar grafik selalu memakai data yang tersedia (bukan grid kosong).
+  const [fallbackRange, setFallbackRange] = useState<null | '7d'>(null);
   const { nodes, selectedNode, selectedNodeId, setSelectedNodeId, isLoading: nodesLoading } = useNode();
 
   // Tandai selesai saat daftar node global selesai dimuat (termasuk kasus kosong).
@@ -91,14 +94,27 @@ export function WaterQualityDetail() {
 
       // Fetch historical data: 1 request, server mengembalikan ≤200 titik
       // yang tersebar MERATA selebar rentang (downsample server-side).
-      const chartParams = new URLSearchParams({ range: timeRange, downsample: '200' });
-      if (timeRange === 'custom') {
-        chartParams.set('from', customStartDate);
-        chartParams.set('to', customEndDate);
-      }
+      const fetchReadings = async (range: string) => {
+        const chartParams = new URLSearchParams({ range, downsample: '200' });
+        if (range === 'custom') {
+          chartParams.set('from', customStartDate);
+          chartParams.set('to', customEndDate);
+        }
+        const historyRes: any = await api.sensorData(String(selectedNodeId), chartParams.toString());
+        return historyRes?.data?.data || (Array.isArray(historyRes?.data) ? historyRes.data : []);
+      };
 
-      const historyRes: any = await api.sensorData(String(selectedNodeId), chartParams.toString());
-      const readings = historyRes?.data?.data || (Array.isArray(historyRes?.data) ? historyRes.data : []);
+      let readings = await fetchReadings(timeRange);
+      let effectiveRange = timeRange;
+      // Fallback: hari ini kosong → tampilkan 7 hari terakhir (data tersedia).
+      if (readings.length === 0 && timeRange === 'today') {
+        const fb = await fetchReadings('7d');
+        if (fb.length > 0) {
+          readings = fb;
+          effectiveRange = '7d';
+        }
+      }
+      setFallbackRange(effectiveRange !== timeRange ? '7d' : null);
 
       if (readings.length > 0) {
         const formatted = readings
@@ -107,7 +123,7 @@ export function WaterQualityDetail() {
           .map((r: any, idx: number) => {
             const dateObj = r.created_at ? new Date(r.created_at) : new Date(Date.now() - (readings.length - idx) * 300000);
             return {
-              time: timeRange === 'today'
+              time: effectiveRange === 'today'
                 ? dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
                 : `${dateObj.toLocaleDateString('id-ID', { day: 'numeric', month: 'numeric' })} ${dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`,
               fullDate: dateObj.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
@@ -116,6 +132,9 @@ export function WaterQualityDetail() {
             };
           });
         setChartData(formatted);
+      } else {
+        // Rentang kosong → bersihkan grafik lama (jangan tampilkan data basi).
+        setChartData([]);
       }
     } catch (err) {
       console.error('Gagal mengambil data kualitas air:', err);
@@ -132,6 +151,7 @@ export function WaterQualityDetail() {
   }, [loadData]);
 
   // Tabel 100 data terbaru — mengikuti node terpilih & rentang aktif
+  // (ikut fallback 7d bila hari ini kosong, agar konsisten dengan grafik).
   useEffect(() => {
     let cancelled = false;
     const fetchTable = async () => {
@@ -141,8 +161,9 @@ export function WaterQualityDetail() {
       }
       try {
         setTableLoading(true);
-        const params = new URLSearchParams({ range: timeRange, per_page: '100' });
-        if (timeRange === 'custom') {
+        const qRange = fallbackRange ?? timeRange;
+        const params = new URLSearchParams({ range: qRange, per_page: '100' });
+        if (qRange === 'custom') {
           params.set('from', customStartDate);
           params.set('to', customEndDate);
         }
@@ -159,7 +180,7 @@ export function WaterQualityDetail() {
     return () => {
       cancelled = true;
     };
-  }, [selectedNodeId, timeRange, customStartDate, customEndDate]);
+  }, [selectedNodeId, timeRange, fallbackRange, customStartDate, customEndDate]);
 
   // Evaluasi pH
   const phValue = metrics.ph;
@@ -243,6 +264,12 @@ export function WaterQualityDetail() {
           </span>
         )}
       </div>
+
+      {fallbackRange && (
+        <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 text-xs text-amber-800 dark:text-amber-300">
+          Tidak ada data hari ini — menampilkan 7 hari terakhir yang tersedia.
+        </div>
+      )}
 
       {/* Time Range Filter Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow-xs">
@@ -350,7 +377,7 @@ export function WaterQualityDetail() {
               <h3 className="text-xs font-semibold text-gray-700 dark:text-gray-300">
                 Tren Nilai pH ({timeRange === 'today' ? 'Hari Ini' : 'Periode Terpilih'})
               </h3>
-              <div className="h-44 w-full">
+              <div className="h-44 w-full relative">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={chartData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
@@ -377,6 +404,11 @@ export function WaterQualityDetail() {
                     />
                   </LineChart>
                 </ResponsiveContainer>
+                {chartData.length === 0 && hasLoaded && (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-gray-500">
+                    Belum ada data pada rentang ini.
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -453,7 +485,7 @@ export function WaterQualityDetail() {
               <h3 className="text-xs font-semibold text-gray-700 dark:text-gray-300">
                 Tren Kekeruhan ({timeRange === 'today' ? 'Hari Ini' : 'Periode Terpilih'})
               </h3>
-              <div className="h-44 w-full">
+              <div className="h-44 w-full relative">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={chartData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
                     <defs>
@@ -485,6 +517,11 @@ export function WaterQualityDetail() {
                     />
                   </AreaChart>
                 </ResponsiveContainer>
+                {chartData.length === 0 && hasLoaded && (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-gray-500">
+                    Belum ada data pada rentang ini.
+                  </div>
+                )}
               </div>
             </div>
           </div>

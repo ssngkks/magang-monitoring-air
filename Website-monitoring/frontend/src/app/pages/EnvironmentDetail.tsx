@@ -46,6 +46,9 @@ export function EnvironmentDetail() {
   const [chartData, setChartData] = useState<any[]>([]);
   const [tableRows, setTableRows] = useState<any[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
+  // Rentang efektif: bila 'today' kosong, otomatis tampilkan '7d' + banner
+  // agar grafik selalu memakai data yang tersedia (bukan grid kosong).
+  const [fallbackRange, setFallbackRange] = useState<null | '7d'>(null);
   const { nodes, selectedNode, selectedNodeId, setSelectedNodeId, isLoading: nodesLoading } = useNode();
 
   // Tandai selesai saat daftar node global selesai dimuat (termasuk kasus kosong).
@@ -83,14 +86,27 @@ export function EnvironmentDetail() {
 
       // Fetch historical data: 1 request, server mengembalikan ≤200 titik
       // yang tersebar MERATA selebar rentang (downsample server-side).
-      const chartParams = new URLSearchParams({ range: timeRange, downsample: '200' });
-      if (timeRange === 'custom') {
-        chartParams.set('from', customStartDate);
-        chartParams.set('to', customEndDate);
-      }
+      const fetchReadings = async (range: string) => {
+        const chartParams = new URLSearchParams({ range, downsample: '200' });
+        if (range === 'custom') {
+          chartParams.set('from', customStartDate);
+          chartParams.set('to', customEndDate);
+        }
+        const historyRes: any = await api.sensorData(String(selectedNodeId), chartParams.toString());
+        return historyRes?.data?.data || (Array.isArray(historyRes?.data) ? historyRes.data : []);
+      };
 
-      const historyRes: any = await api.sensorData(String(selectedNodeId), chartParams.toString());
-      const readings = historyRes?.data?.data || (Array.isArray(historyRes?.data) ? historyRes.data : []);
+      let readings = await fetchReadings(timeRange);
+      let effectiveRange = timeRange;
+      // Fallback: hari ini kosong → tampilkan 7 hari terakhir (data tersedia).
+      if (readings.length === 0 && timeRange === 'today') {
+        const fb = await fetchReadings('7d');
+        if (fb.length > 0) {
+          readings = fb;
+          effectiveRange = '7d';
+        }
+      }
+      setFallbackRange(effectiveRange !== timeRange ? '7d' : null);
 
       if (readings.length > 0) {
         let minT = 999;
@@ -112,7 +128,7 @@ export function EnvironmentDetail() {
             if (h > maxH) maxH = h;
 
             return {
-              time: timeRange === 'today'
+              time: effectiveRange === 'today'
                 ? dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
                 : `${dateObj.toLocaleDateString('id-ID', { day: 'numeric', month: 'numeric' })} ${dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`,
               fullDate: dateObj.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
@@ -132,6 +148,8 @@ export function EnvironmentDetail() {
 
         setChartData(formatted);
       } else {
+        // Rentang kosong → bersihkan grafik lama (jangan tampilkan data basi).
+        setChartData([]);
         setMetrics((prev) => ({
           ...prev,
           temperature: currentTemp,
@@ -153,6 +171,7 @@ export function EnvironmentDetail() {
   }, [loadData]);
 
   // Tabel 100 data terbaru — mengikuti node terpilih & rentang aktif
+  // (ikut fallback 7d bila hari ini kosong, agar konsisten dengan grafik).
   useEffect(() => {
     let cancelled = false;
     const fetchTable = async () => {
@@ -162,8 +181,9 @@ export function EnvironmentDetail() {
       }
       try {
         setTableLoading(true);
-        const params = new URLSearchParams({ range: timeRange, per_page: '100' });
-        if (timeRange === 'custom') {
+        const qRange = fallbackRange ?? timeRange;
+        const params = new URLSearchParams({ range: qRange, per_page: '100' });
+        if (qRange === 'custom') {
           params.set('from', customStartDate);
           params.set('to', customEndDate);
         }
@@ -180,7 +200,7 @@ export function EnvironmentDetail() {
     return () => {
       cancelled = true;
     };
-  }, [selectedNodeId, timeRange, customStartDate, customEndDate]);
+  }, [selectedNodeId, timeRange, fallbackRange, customStartDate, customEndDate]);
 
   // Evaluasi Suhu -> Normal / Warning / Bahaya (teks saja)
   const tempVal = metrics.temperature;
@@ -236,12 +256,12 @@ export function EnvironmentDetail() {
             title="Segarkan Data"
             className="flex items-center justify-center p-2.5 text-gray-700 dark:text-gray-200 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 transition shadow-xs"
           >
-            <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin text-amber-500' : ''}`} />
+            <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin text-blue-500' : ''}`} />
           </button>
 
           <Link
             to="/reports?parameter=suhu"
-            className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg bg-amber-600 hover:bg-amber-700 text-white transition shadow-xs"
+            className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition shadow-xs"
           >
             <Download className="h-3.5 w-3.5" />
             <span>Ekspor Laporan</span>
@@ -260,10 +280,16 @@ export function EnvironmentDetail() {
         )}
       </div>
 
+      {fallbackRange && (
+        <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 text-xs text-amber-800 dark:text-amber-300">
+          Tidak ada data hari ini — menampilkan 7 hari terakhir yang tersedia.
+        </div>
+      )}
+
       {/* Time Range Filter Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow-xs">
         <div className="flex items-center gap-2 text-xs font-medium text-gray-600 dark:text-gray-400">
-          <Filter className="h-4 w-4 text-amber-500" />
+          <Filter className="h-4 w-4 text-blue-500" />
           <span>Rentang Waktu Analisis Lingkungan:</span>
         </div>
 
@@ -274,7 +300,7 @@ export function EnvironmentDetail() {
               onClick={() => setTimeRange(r)}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
                 timeRange === r
-                  ? 'bg-amber-600 text-white shadow-xs'
+                  ? 'bg-blue-600 text-white shadow-xs'
                   : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
               }`}
             >
@@ -369,7 +395,7 @@ export function EnvironmentDetail() {
               <h3 className="text-xs font-semibold text-gray-700 dark:text-gray-300">
                 Tren Fluktuasi Suhu ({timeRange === 'today' ? 'Hari Ini' : 'Periode Terpilih'})
               </h3>
-              <div className="h-44 w-full">
+              <div className="h-44 w-full relative">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={chartData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
                     <defs>
@@ -401,6 +427,11 @@ export function EnvironmentDetail() {
                     />
                   </AreaChart>
                 </ResponsiveContainer>
+                {chartData.length === 0 && hasLoaded && (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-gray-500">
+                    Belum ada data pada rentang ini.
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -471,7 +502,7 @@ export function EnvironmentDetail() {
               <h3 className="text-xs font-semibold text-gray-700 dark:text-gray-300">
                 Tren Kelembapan ({timeRange === 'today' ? 'Hari Ini' : 'Periode Terpilih'})
               </h3>
-              <div className="h-44 w-full">
+              <div className="h-44 w-full relative">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={chartData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
                     <defs>
@@ -503,6 +534,11 @@ export function EnvironmentDetail() {
                     />
                   </AreaChart>
                 </ResponsiveContainer>
+                {chartData.length === 0 && hasLoaded && (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-gray-500">
+                    Belum ada data pada rentang ini.
+                  </div>
+                )}
               </div>
             </div>
           </div>

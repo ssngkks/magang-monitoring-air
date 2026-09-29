@@ -29,7 +29,7 @@ class KirimNotifikasiRecovery implements ShouldQueue
 
         return;
 
-        $timestamp = Carbon::now()->locale('id')->isoFormat('D MMMM Y, HH:mm:ss').' WIB';
+        $timestamp = Carbon::now()->tz('Asia/Jakarta')->locale('id')->isoFormat('D MMMM Y, HH:mm:ss').' WIB';
 
         $teks = "✅ *EDGE AI UPDATE*\n\n"
             ."Status kembali *NORMAL*\n"

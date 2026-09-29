@@ -92,6 +92,9 @@ class SensorIngestService
 
         // 2b. Gateway yang menitipkan data (§5.3): dikenal → sentuh last_seen saja
         // (JANGAN paksa active). Tak dikenal → pending, menunggu hello + registrasi.
+        // Blueprint §3.3: JANGAN salin hash milik node pengirim ke gateway baru —
+        // tiap device wajib punya token unik sendiri (acakan), kalau tidak satu
+        // token bocor bisa dipakai lintas device.
         $gatewayId = $data['gateway_id'] ?? null;
         if ($gatewayId) {
             $gw = Node::where('kode_node', $gatewayId)->first();
@@ -103,9 +106,7 @@ class SensorIngestService
                     'device_name' => 'Perangkat Baru '.$gatewayId,
                     'model_type' => 'ESP32 Gateway (LoRa)',
                     'device_role' => 'gateway',
-                    // Salin hash pengirim (sama-sama pakai shared DEVICE_KEY) agar
-                    // gateway bisa heartbeat; hash di-hidden dari toArray() → ambil via repo.
-                    'api_token_hash' => $this->nodeRepo->getTokenHashByKodeNode($node['kode_node'] ?? '') ?? hash('sha256', Str::random(40)),
+                    'api_token_hash' => hash('sha256', Str::random(40)),
                     'status' => 'pending',
                     'firmware_version' => '1.0.2',
                     'last_seen_at' => now(),

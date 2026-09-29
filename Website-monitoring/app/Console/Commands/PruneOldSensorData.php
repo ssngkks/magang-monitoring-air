@@ -2,49 +2,50 @@
 
 namespace App\Console\Commands;
 
-use App\Repositories\SensorDataRepository;
-use Google\Cloud\Core\Timestamp;
+use App\Models\SensorData;
 use Illuminate\Console\Command;
 
 class PruneOldSensorData extends Command
 {
     protected $signature = 'sensor-data:prune {--force : lewati konfirmasi dan jalankan non-interaktif}';
 
-    protected $description = 'Hapus pembacaan sensor lama dari Firestore (disarankan pakai native Firestore TTL policy).';
+    protected $description = 'Hapus pembacaan sensor mentah yang lebih tua dari masa retensi (MySQL, bertahap per 1000 baris).';
 
-    public function handle(SensorDataRepository $sensorRepo): int
+    public function handle(): int
     {
         $bulanRetensi = (int) config('watermonitoring.raw_retention_months', 3);
         $batasWaktu = now()->subMonths($bulanRetensi);
 
         $this->info("Menyiapkan pembersihan data sebelum {$batasWaktu->toDateString()}...");
 
-        // Query data lama menggunakan native Timestamp Firestore
-        $tsBatasWaktu = new Timestamp($batasWaktu->toDateTime());
-        $oldDocs = $sensorRepo->where('received_at', '<', $tsBatasWaktu)->limit(500)->documents();
-        $count = 0;
-        $batch = $sensorRepo->batch();
-
-        foreach ($oldDocs as $doc) {
-            $batch->delete($doc->reference());
-            $count++;
-        }
-
-        if ($count === 0) {
+        $total = (clone $this->baseQuery($batasWaktu))->count();
+        if ($total === 0) {
             $this->info('Tidak ada data mentah lama yang perlu dihapus.');
 
             return self::SUCCESS;
         }
 
-        if (! $this->option('force') && ! $this->confirm("Akan menghapus {$count} dokumen sensor lama. Lanjutkan?", true)) {
+        if (! $this->option('force') && ! $this->confirm("Akan menghapus {$total} baris sensor lama. Lanjutkan?", true)) {
             $this->warn('Dibatalkan.');
 
             return self::SUCCESS;
         }
 
-        $sensorRepo->commit($batch);
-        $this->info("Berhasil membersihkan {$count} data sensor lama.");
+        // Hapus bertahap agar tabel tidak terkunci lama saat dibuka
+        // bersamaan dari banyak device (phpMyAdmin ikut lega).
+        $deleted = 0;
+        do {
+            $batch = (clone $this->baseQuery($batasWaktu))->limit(1000)->delete();
+            $deleted += $batch;
+        } while ($batch > 0);
+
+        $this->info("Berhasil membersihkan {$deleted} data sensor lama.");
 
         return self::SUCCESS;
+    }
+
+    protected function baseQuery(\DateTimeInterface $cutoff)
+    {
+        return SensorData::where('created_at', '<', $cutoff);
     }
 }
