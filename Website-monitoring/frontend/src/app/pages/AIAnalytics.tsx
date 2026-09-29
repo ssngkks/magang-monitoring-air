@@ -61,10 +61,20 @@ export function AIAnalytics() {
 
   useEffect(() => {
     fetchDiagnostics();
+    // Jeda saat tab disembunyikan (hemat antrean server single-thread);
+    // fetch ulang otomatis begitu tab dibuka lagi agar data tidak basi.
     const interval = setInterval(() => {
+      if (document.hidden) return;
       fetchDiagnostics();
     }, 15000); // Polling otomatis tiap 15 detik
-    return () => clearInterval(interval);
+    const onVisible = () => {
+      if (!document.hidden) fetchDiagnostics();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [fetchDiagnostics]);
 
   // Tanpa data backend → null (jangan tampilkan angka palsu).
@@ -259,7 +269,7 @@ export function AIAnalytics() {
             Status Keputusan AI
           </span>
           <span className="text-xs sm:text-sm font-bold text-gray-800 dark:text-gray-200">
-            Terakhir Update: {formattedUpdateTime}
+            Update: {formattedUpdateTime}
           </span>
         </div>
 
@@ -393,7 +403,7 @@ export function AIAnalytics() {
         </div>
 
         {/* Ringkasan Nilai Sensor Aktual */}
-        <div className="rounded-xl border border-gray-200 bg-white p-4 sm:p-6 shadow-xs dark:border-gray-800 dark:bg-gray-900 lg:col-span-6 flex flex-col justify-between min-w-0">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 sm:p-6 shadow-xs dark:border-gray-800 dark:bg-gray-900 lg:col-span-6 flex flex-col min-w-0">
           <div>
             <h3 className="font-semibold text-gray-900 dark:text-gray-100">
               Nilai Telemetri Sensor Saat Ini
@@ -403,7 +413,7 @@ export function AIAnalytics() {
             </p>
           </div>
 
-          <div className="my-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+          <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-3">
             <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800/50">
               <span className="text-[11px] text-gray-500 dark:text-gray-400">pH Air</span>
               <div className="text-lg font-bold text-gray-900 dark:text-gray-100">
@@ -489,7 +499,7 @@ export function AIAnalytics() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
           <div>
             <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
-              Riwayat Diagnosa Multivariat AI
+              Riwayat Diagnosa Analisis AI
             </h3>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
               Log keputusan inferensi realtime yang tercatat secara kronologis.

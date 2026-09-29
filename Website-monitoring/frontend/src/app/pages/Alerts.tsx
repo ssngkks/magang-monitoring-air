@@ -223,10 +223,9 @@ export function Alerts() {
             disabled={isRefreshing}
             aria-label="Segarkan Peringatan"
             title="Segarkan Peringatan"
-            className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3.5 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-50 shadow-xs dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 cursor-pointer disabled:opacity-50"
+            className="flex items-center justify-center rounded-xl border border-gray-200 bg-white p-2.5 text-gray-700 transition hover:bg-gray-50 shadow-xs dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 cursor-pointer disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin text-blue-600' : ''}`} />
-            <span>Segarkan</span>
           </button>
         </div>
       </div>

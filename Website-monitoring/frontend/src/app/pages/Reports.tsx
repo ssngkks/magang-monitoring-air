@@ -346,12 +346,12 @@ export function Reports() {
           <button
             type="button"
             onClick={() => fetchReportData()}
-            disabled={loading}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 shadow-xs transition-colors disabled:opacity-50 cursor-pointer dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+            disabled={loading || isFiltering}
+            className="flex items-center justify-center p-2.5 text-xs font-semibold rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 shadow-xs transition-colors disabled:opacity-50 cursor-pointer dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
             title="Segarkan Data"
+            aria-label="Segarkan Data"
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-blue-600' : ''}`} />
-            <span>Segarkan</span>
+            <RefreshCw className={`w-4 h-4 ${isFiltering || loading ? 'animate-spin text-blue-600' : ''}`} />
           </button>
 
           <button
