@@ -84,6 +84,9 @@ class FirmwareOtaController extends Controller
                 if ($required) {
                     throw $e;
                 }
+                // Signing gagal tapi file ada: SHA tetap dihitung agar
+                // checksum tersedia (firmware default verifikasi SHA saja).
+                $hash = file_exists($fullPath) ? hash_file('sha256', $fullPath) : null;
                 $signature = null;
             }
         }
