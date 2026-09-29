@@ -12,9 +12,11 @@ interface NodeSelectorProps {
   /** Tampilkan opsi "Semua Node" paling atas (nilai 'all'). */
   showAllOption?: boolean;
   allLabel?: string;
+  /** Tombol selebar wadah (bukan w-64) — untuk sel grid yang lebar. */
+  fluid?: boolean;
 }
 
-export function NodeSelector({ nodes, value, onChange, id = 'node-selector', className = '', showAllOption = false, allLabel = 'Semua Node' }: NodeSelectorProps) {
+export function NodeSelector({ nodes, value, onChange, id = 'node-selector', className = '', showAllOption = false, allLabel = 'Semua Node', fluid = false }: NodeSelectorProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
@@ -52,7 +54,8 @@ export function NodeSelector({ nodes, value, onChange, id = 'node-selector', cla
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex w-full sm:w-64 items-center justify-between gap-2 px-3 py-1.5 text-xs font-bold rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 font-mono hover:border-blue-400 transition"
+        title={isAll ? allLabel : selected ? getNodeCode(selected) : 'Pilih node'}
+        className={`flex w-full ${fluid ? '' : 'sm:w-64'} items-center justify-between gap-2 px-3 py-2 text-xs font-bold rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 font-mono hover:border-blue-400 transition`}
       >
         <span className="flex items-center gap-2 truncate">
           {isAll ? (

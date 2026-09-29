@@ -435,9 +435,9 @@ export function Reports() {
           )}
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3.5 text-xs">
           {/* Tanggal Mulai */}
-          <div>
+          <div className="lg:col-span-2">
             <label className="block text-gray-500 dark:text-gray-400 font-medium mb-1 flex items-center gap-1">
               <Calendar className="w-3.5 h-3.5" /> Tanggal Mulai
             </label>
@@ -450,7 +450,7 @@ export function Reports() {
           </div>
 
           {/* Tanggal Akhir */}
-          <div>
+          <div className="lg:col-span-2">
             <label className="block text-gray-500 dark:text-gray-400 font-medium mb-1 flex items-center gap-1">
               <Calendar className="w-3.5 h-3.5" /> Tanggal Akhir
             </label>
@@ -462,16 +462,16 @@ export function Reports() {
             />
           </div>
 
-          {/* Node aktif global */}
-          <div className="lg:col-span-2">
+          {/* Node aktif global — sel lebar agar kode tampil penuh */}
+          <div className="sm:col-span-2 lg:col-span-4">
             <label className="block text-gray-500 dark:text-gray-400 font-medium mb-1 flex items-center gap-1">
               <Cpu className="w-3.5 h-3.5" /> Node Aktif
             </label>
-            <NodeSelector nodes={nodes} value={selectedNodeId} onChange={setSelectedNodeId} className="w-full" />
+            <NodeSelector nodes={nodes} value={selectedNodeId} onChange={setSelectedNodeId} className="w-full" fluid />
           </div>
 
           {/* Filter Lokasi */}
-          <div>
+          <div className="lg:col-span-2">
             <label className="block text-gray-500 dark:text-gray-400 font-medium mb-1 flex items-center gap-1">
               <Building2 className="w-3.5 h-3.5" /> Lokasi / Tandon
             </label>
@@ -489,8 +489,8 @@ export function Reports() {
             </select>
           </div>
 
-          {/* Filter Sensor/Parameter */}
-          <div>
+          {/* Filter Sensor/Parameter — secukupnya, tidak over panjang */}
+          <div className="lg:col-span-2">
             <label className="block text-gray-500 dark:text-gray-400 font-medium mb-1 flex items-center gap-1">
               <Activity className="w-3.5 h-3.5" /> Sensor / Parameter
             </label>

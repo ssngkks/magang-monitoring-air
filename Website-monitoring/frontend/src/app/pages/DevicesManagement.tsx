@@ -131,7 +131,6 @@ export function DevicesManagement() {
   const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
   const [targetFirmwareForUpgrade, setTargetFirmwareForUpgrade] = useState<FirmwareItem | null>(null);
   const [upgradeSelectedDeviceIds, setUpgradeSelectedDeviceIds] = useState<string[]>([]);
-  const [upgradeSearchQuery, setUpgradeSearchQuery] = useState<string>('');
   const [isUpgradingFromRepo, setIsUpgradingFromRepo] = useState(false);
   // Mode rollback: modal yang sama dipakai memilih target downgrade + konfirmasi
   const [isRollbackMode, setIsRollbackMode] = useState(false);
@@ -289,6 +288,7 @@ export function DevicesManagement() {
         title: 'Tutup Form?',
         message: 'Ada data yang belum disimpan di form perangkat. Yakin ingin menutup form?',
         confirmText: 'Tutup Tanpa Simpan',
+        danger: true,
         onConfirm: () => setIsAddDeviceOpen(false),
       });
       return;
@@ -303,6 +303,7 @@ export function DevicesManagement() {
         title: 'Tutup Form?',
         message: 'Ada data yang belum disimpan di form jenis perangkat. Yakin ingin menutup form?',
         confirmText: 'Tutup Tanpa Simpan',
+        danger: true,
         onConfirm: () => setIsAddDeviceTypeOpen(false),
       });
       return;
@@ -322,6 +323,7 @@ export function DevicesManagement() {
         title: 'Tutup Form?',
         message: 'Ada data yang belum disimpan di form sektor. Yakin ingin menutup form?',
         confirmText: 'Tutup Tanpa Simpan',
+        danger: true,
         onConfirm: () => setIsAddLocationOpen(false),
       });
       return;
@@ -340,6 +342,7 @@ export function DevicesManagement() {
         title: 'Tutup Form?',
         message: 'Ada data yang belum disimpan di form sensor. Yakin ingin menutup form?',
         confirmText: 'Tutup Tanpa Simpan',
+        danger: true,
         onConfirm: () => setIsAddSensorOpen(false),
       });
       return;
@@ -360,6 +363,7 @@ export function DevicesManagement() {
         title: 'Tutup Form?',
         message: 'Ada data yang belum disimpan di form upload firmware. Yakin ingin menutup form?',
         confirmText: 'Tutup Tanpa Simpan',
+        danger: true,
         onConfirm: () => setIsUploadFirmwareOpen(false),
       });
       return;
@@ -1176,7 +1180,6 @@ export function DevicesManagement() {
       setUpgradeSelectedDeviceIds(matchingDevIds.length > 0 ? matchingDevIds : devices.map((d) => String(d.id)));
       setUpgradeFromUpload(false);
     }
-    setUpgradeSearchQuery('');
     setIsUpgradeModalOpen(true);
   };
 
@@ -1196,9 +1199,9 @@ export function DevicesManagement() {
         for (const devId of upgradeSelectedDeviceIds) {
           api.forceOtaCheck(devId).catch(() => {});
         }
-        showFeedback('success', 'Berhasil', `⚡ Upgrade firmware v${targetFirmwareForUpgrade.version} langsung dikirim ke ${upgradeSelectedDeviceIds.length} perangkat! ESP32 akan download dalam ≤10 detik.`);
+          showFeedback('success', 'Berhasil', `Upgrade firmware ${displayFwVersion(targetFirmwareForUpgrade.version)} langsung dikirim ke ${upgradeSelectedDeviceIds.length} perangkat! ESP32 akan download dalam ≤10 detik.`);
       } else {
-        showFeedback('success', 'Berhasil', `🕐 Upgrade firmware v${targetFirmwareForUpgrade.version} dijadwalkan ke ${upgradeSelectedDeviceIds.length} perangkat.`);
+          showFeedback('success', 'Berhasil', `Upgrade firmware ${displayFwVersion(targetFirmwareForUpgrade.version)} dijadwalkan ke ${upgradeSelectedDeviceIds.length} perangkat.`);
       }
 
       if (res.blocked && res.blocked.length > 0) {
@@ -1257,7 +1260,6 @@ export function DevicesManagement() {
       .map((d) => String(d.id));
     setUpgradeSelectedDeviceIds(candidates);
     setUpgradeFromUpload(false);
-    setUpgradeSearchQuery('');
     setIsUpgradeModalOpen(true);
   };
 
@@ -1371,7 +1373,7 @@ export function DevicesManagement() {
             <AlertDialogCancel>Batal</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => { confirmReq?.onConfirm(); setConfirmReq(null); }}
-              className={confirmReq?.danger ? 'bg-red-600 hover:bg-red-700 focus:ring-red-600' : ''}
+              className={confirmReq?.danger ? 'bg-red-600 hover:bg-red-700 focus:ring-red-600 text-white' : ''}
             >
               {confirmReq?.confirmText || 'Ya, Lanjutkan'}
             </AlertDialogAction>
@@ -2270,7 +2272,7 @@ export function DevicesManagement() {
                                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition cursor-pointer"
                                 title="Terapkan dan upgrade firmware ini ke multi-perangkat"
                               >
-                                <Zap className="w-3.5 h-3.5 text-amber-300" /> Upgrade
+                                Upgrade
                               </button>
                             )}
                             {!(fw.is_latest_for_model ?? true) && isFileAvailable(fw) && (canRollbackFirmware(fw) || devices.length === 0) && (
@@ -2278,9 +2280,9 @@ export function DevicesManagement() {
                                 type="button"
                                 onClick={() => handleOpenRollback(fw)}
                                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-xs transition cursor-pointer"
-                                title={`Rollback perangkat ke firmware v${fw.version}`}
+                                title={`Rollback perangkat ke firmware ${displayFwVersion(fw.version)}`}
                               >
-                                <History className="w-3.5 h-3.5" /> Rollback
+                                Rollback
                               </button>
                             )}
 
@@ -3805,16 +3807,13 @@ export function DevicesManagement() {
               <X className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 mb-2 pr-8">
-              {isRollbackMode
-                ? <History className="w-5 h-5 text-amber-500" />
-                : <Zap className="w-5 h-5 text-amber-400 fill-amber-400" />}
               <h3 className="text-base font-bold text-gray-900 dark:text-white">
-                {isRollbackMode ? 'Rollback' : 'Upgrade'} Firmware v{targetFirmwareForUpgrade.version}
+                {isRollbackMode ? 'Rollback' : 'Upgrade'} Firmware {displayFwVersion(targetFirmwareForUpgrade.version)}
               </h3>
             </div>
             {isRollbackMode && (
               <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 text-xs text-amber-800 dark:text-amber-200 mb-3 leading-relaxed">
-                Rollback memakai <strong>file asli v{targetFirmwareForUpgrade.version}</strong> sebagai source OTA
+                Rollback memakai <strong>file asli {displayFwVersion(targetFirmwareForUpgrade.version)}</strong> sebagai source OTA
                 (bukan ganti label). Perangkat terpilih akan di-flash ke versi ini dan dicatat di riwayat OTA.
               </div>
             )}
@@ -3825,84 +3824,30 @@ export function DevicesManagement() {
                 <span className="font-semibold text-gray-900 dark:text-white">{targetFirmwareForUpgrade.name}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-500">Target Model:</span>
-                <span className="font-semibold text-indigo-600 dark:text-indigo-400">{targetFirmwareForUpgrade.target_device_model || 'Semua Model'}</span>
-              </div>
-              <div className="flex justify-between">
                 <span className="text-gray-500">Ukuran Biner:</span>
                 <span className="font-mono text-gray-700 dark:text-gray-300">{targetFirmwareForUpgrade.file_size_formatted || `${(targetFirmwareForUpgrade.file_size / 1024).toFixed(1)} KB`}</span>
               </div>
             </div>
 
-            {/* Checklist Multi-Device Selection */}
+            {/* Target otomatis: semua perangkat sesuai model firmware (tanpa pilih ulang) */}
             <div className="mb-3">
               <div className="flex items-center justify-between mb-1.5">
                 <label className="text-gray-700 dark:text-gray-300 font-semibold text-xs">
-                  Centang Perangkat Tujuan (WAJIB ≥ 1):
+                  Perangkat Tujuan Otomatis:
                 </label>
-                {upgradeFromUpload && (
-                  <p className="text-[11px] text-indigo-600 dark:text-indigo-400 mt-1">
-                    Dipilih otomatis dari unggahan terakhir — ubah bila perlu.
-                  </p>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (upgradeSelectedDeviceIds.length === devices.length) {
-                      setUpgradeSelectedDeviceIds([]);
-                    } else {
-                      setUpgradeSelectedDeviceIds(devices.map((d) => String(d.id)));
-                    }
-                  }}
-                  className="text-[11px] text-indigo-600 dark:text-indigo-400 font-bold hover:underline cursor-pointer"
-                >
-                  {upgradeSelectedDeviceIds.length > 0 ? 'Pilih Semua / Reset' : 'Pilih Semua'}
-                </button>
-              </div>
-
-              <div className="relative mb-2">
-                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="Cari kode atau nama perangkat..."
-                  value={upgradeSearchQuery}
-                  onChange={(e) => setUpgradeSearchQuery(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 dark:text-white"
-                />
               </div>
 
               <div className="border border-gray-200 dark:border-gray-800 rounded-2xl p-2 max-h-[180px] overflow-y-auto space-y-1">
                 {devices
-                  .filter((d) => {
-                    if (upgradeSearchQuery) {
-                      const q = upgradeSearchQuery.toLowerCase();
-                      return d.kode_node.toLowerCase().includes(q) || d.device_name.toLowerCase().includes(q);
-                    }
-                    return true;
-                  })
+                  .filter((d) => upgradeSelectedDeviceIds.includes(String(d.id)))
                   .map((d) => {
-                    const isChecked = upgradeSelectedDeviceIds.includes(String(d.id));
                     return (
                       <div
                         key={d.id}
-                        onClick={() => {
-                          const sid = String(d.id);
-                          setUpgradeSelectedDeviceIds((prev) =>
-                            isChecked ? prev.filter((x) => x !== sid) : [...prev, sid]
-                          );
-                        }}
-                        className={`p-2 rounded-xl flex items-center justify-between cursor-pointer text-xs transition-colors ${
-                          isChecked
-                            ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-950 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-900'
-                            : 'hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300'
-                        }`}
+                        className="p-2 rounded-xl flex items-center justify-between text-xs bg-indigo-50 dark:bg-indigo-950/40 text-indigo-950 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-900"
                       >
                         <div className="flex items-center gap-2">
-                          {isChecked ? (
-                            <CheckSquare className="w-4 h-4 text-indigo-600 shrink-0" />
-                          ) : (
-                            <Square className="w-4 h-4 text-gray-400 shrink-0" />
-                          )}
+                          <CheckSquare className="w-4 h-4 text-indigo-600 shrink-0" />
                           <span className="font-semibold">{d.device_name || d.kode_node}</span>
                           <span className="text-[10px] text-gray-400 font-mono">({d.kode_node})</span>
                         </div>
@@ -3923,7 +3868,7 @@ export function DevicesManagement() {
                   })}
               </div>
               <span className="text-[11px] text-gray-500 mt-1 block">
-                Terpilih: <strong>{upgradeSelectedDeviceIds.length}</strong> perangkat
+                Target otomatis: <strong>{upgradeSelectedDeviceIds.length}</strong> perangkat sesuai model firmware ini
               </span>
             </div>
 
@@ -3931,17 +3876,16 @@ export function DevicesManagement() {
             <div className="space-y-2 pt-2 border-t border-gray-100 dark:border-gray-800">
               {isRollbackMode ? (
                 <>
-                  <p className="text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
-                    Anda akan melakukan rollback <strong>{upgradeSelectedDeviceIds.length} perangkat</strong> ke firmware{' '}
-                    <strong className="font-mono">v{targetFirmwareForUpgrade.version}</strong>. Lanjutkan?
-                  </p>
+                    <p className="text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+                      Anda akan melakukan rollback <strong>{upgradeSelectedDeviceIds.length} perangkat</strong> ke firmware{' '}
+                      <strong className="font-mono">{displayFwVersion(targetFirmwareForUpgrade.version)}</strong>. Lanjutkan?
+                    </p>
                   <button
                     type="button"
                     onClick={() => handleExecuteUpgradeMulti(true)}
                     disabled={isUpgradingFromRepo || upgradeSelectedDeviceIds.length === 0}
                     className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-md disabled:opacity-50 cursor-pointer transition-all"
                   >
-                    <History className="w-4 h-4" />
                     Lanjutkan Rollback
                   </button>
                 </>
@@ -3953,8 +3897,7 @@ export function DevicesManagement() {
                     disabled={isUpgradingFromRepo || upgradeSelectedDeviceIds.length === 0}
                     className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-md disabled:opacity-50 cursor-pointer transition-all"
                   >
-                    <Zap className="w-4 h-4 text-amber-300" />
-                    ⚡ Upgrade Sekarang (Instan ≤10 Detik)
+                     Upgrade Sekarang
                   </button>
 
                   <button
@@ -3963,8 +3906,7 @@ export function DevicesManagement() {
                     disabled={isUpgradingFromRepo || upgradeSelectedDeviceIds.length === 0}
                     className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 disabled:opacity-50 cursor-pointer"
                   >
-                    <Clock className="w-3.5 h-3.5" />
-                    🕐 Jadwalkan Saja (Otomatis Tiap 15 Menit)
+                    Jadwalkan Saja (Otomatis Tiap 15 Menit)
                   </button>
                 </>
               )}

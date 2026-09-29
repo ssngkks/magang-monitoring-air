@@ -634,7 +634,7 @@ export function Dashboard() {
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Link to="/ai-analytics" className="group py-1">
-            <strong className="text-sm font-bold text-gray-900 dark:text-white block group-hover:text-blue-600 transition-colors">Analisis Edge AI</strong>
+            <strong className="text-sm font-bold text-gray-900 dark:text-white block group-hover:text-blue-600 transition-colors">Analisis AI</strong>
             <span className="text-xs text-gray-400">Diagnosis prediktif & model TinyML</span>
           </Link>
           <Link to="/devices" className="group py-1">
